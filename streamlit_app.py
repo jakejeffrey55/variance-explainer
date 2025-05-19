@@ -59,7 +59,7 @@ if uploaded_file:
             movein_df = pd.read_excel(t_xls, sheet_name="Move ins")
             moveout_df = pd.read_excel(t_xls, sheet_name="Move outs")
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
-            total_units = unitmix_df[unitmix_df.columns[1]].dropna().iloc[-1]
+           total_units = pd.to_numeric(unitmix_df[unitmix_df.columns[1]].dropna().iloc[-1], errors='coerce')
         else:
             occ_df = leasing_df = movein_df = moveout_df = unitmix_df = None
             total_units = np.nan
