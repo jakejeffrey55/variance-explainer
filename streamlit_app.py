@@ -10,14 +10,12 @@ trends_file = st.file_uploader("Upload your Trends file (Occupancy, Leasing, Mov
 
 if uploaded_file:
     try:
-        # Load core sheets
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
         df_invoices = pd.read_excel(xls, sheet_name="Invoices ")
 
-        # Clean core sheets
-        df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')
+        df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\\d{4})')[0]
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
         df_asset["GL Type"] = df_asset["GL Code"].astype(float).apply(
@@ -33,7 +31,6 @@ if uploaded_file:
         df_invoices["GLCode"] = df_invoices["GLCode"].astype(str).str.zfill(4)
         df_invoices["SupplierInvoiceNumber"] = df_invoices["SupplierInvoiceNumber"].astype(str)
 
-        # Invoice summaries
         invoice_stats = (
             df_invoices.groupby("GLCode")["SUM OF LineItemTotal"]
             .agg(['mean', 'max', 'idxmax'])
@@ -51,7 +48,6 @@ if uploaded_file:
             .rename(columns={"SUM OF LineItemTotal": "Total Invoiced"})
         )
 
-        # Load trends if present
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             occ_df = pd.read_excel(t_xls, sheet_name="Occupancy vs Budget")
@@ -64,9 +60,10 @@ if uploaded_file:
             occ_df = leasing_df = movein_df = moveout_df = unitmix_df = None
             total_units = np.nan
 
-        # Filter rows needing explanation
         def should_explain(row):
             acct = str(row["Accounts"])
+            gl_code = row["GL Code"]
+            if pd.isna(gl_code): return False
             if any(x in acct for x in ["Total", "Net", "Income"]): return False
             if acct.startswith(("4011", "4012", "6", "7", "8999")): return False
             if abs(row["$ Variance"] or 0) < 1000: return False
@@ -75,19 +72,16 @@ if uploaded_file:
 
         df_asset["Explain"] = df_asset.apply(should_explain, axis=1)
 
-        # Merge sheets
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
         df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
 
-        # Ask for payroll context
         understaffed_flag = "No"
         understaffed_gls = df_merged[(df_merged["GL Code"].isin(["5205", "5210"])) & (df_merged["$ Variance"] < -1000)]
         if not understaffed_gls.empty:
             st.warning("⚠️ Payroll is under budget. Is the property currently understaffed?")
             understaffed_flag = st.radio("Staffing status", ["Yes", "No"], index=1)
 
-        # Explanation generator
         def generate_explanation(row):
             if not row["Explain"]:
                 return ""
@@ -100,8 +94,8 @@ if uploaded_file:
             if row["GL Type"] == "Income":
                 occ_note = ""
                 if occ_df is not None:
-                    occ_row = occ_df.iloc[-1]
-                    occ_note = f" Occupancy was {occ_row['Actual Occupancy']}% vs {occ_row['Budgeted Occupancy']}% budgeted."
+                    latest = occ_df.sort_values("Month").iloc[-1]
+                    occ_note = f" Occupancy was {latest['Actual Occupancy']}% vs {latest['Budgeted Occupancy']}% budgeted."
                 return f"{direction} variance in {desc} (GL {gl}) may be tied to income shortfalls.{occ_note}"
 
             if gl in ["5205", "5210"] and understaffed_flag == "Yes":
@@ -111,7 +105,7 @@ if uploaded_file:
                 return f"{direction} variance in {desc} (GL {gl}) due to invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f}, which exceeds 2× the average of ${row['Avg Invoice']:,.2f}."
 
             if moveout_df is not None and gl in ["5601", "5671"]:
-                mo_row = moveout_df.iloc[-1]
+                mo_row = moveout_df.sort_values("Month").iloc[-1]
                 return f"{direction} variance in {desc} (GL {gl}) may relate to {mo_row['Move outs']} move-outs this month, which increases cleaning and service costs."
 
             if pd.isna(row["Total Invoiced"]) or row["Total Invoiced"] == 0:
@@ -139,3 +133,4 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
+
