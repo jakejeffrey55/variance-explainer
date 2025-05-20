@@ -83,7 +83,7 @@ if uploaded_file:
         def should_explain(row):
             gl_code = row["GL Code"]
             if pd.isna(gl_code): return False
-            if pd.isna(row["Actuals"]) and pd.isna(row["$ Variance"]): return False
+            if pd.isna(row.get("Actuals")) and pd.isna(row.get("$ Variance")): return False
             return True
 
         df_asset["Explain"] = df_asset.apply(should_explain, axis=1)
@@ -97,13 +97,13 @@ if uploaded_file:
                 return ""
 
             gl = row["GL Code"]
-            desc = row["Description"] if pd.notna(row["Description"]) else "this account"
-            actual = row["Actuals"]
-            budget = row["Budget Reporting"]
+            desc = row.get("Description", "this account")
+            actual = row.get("Actuals", np.nan)
+            budget = row.get("Budget Reporting", np.nan)
             ytd_actual = row.get("YTD Actuals", np.nan)
             ytd_budget = row.get("YTD Budget", np.nan)
             ytd_variance = ytd_actual - ytd_budget if pd.notna(ytd_actual) and pd.notna(ytd_budget) else np.nan
-            var = row["$ Variance"]
+            var = row.get("$ Variance", 0)
             direction = "Unfavorable" if var < 0 else "Favorable"
 
             explanation = f"{direction} variance in {desc} (GL {gl}). "
@@ -113,9 +113,9 @@ if uploaded_file:
             elif pd.notna(ytd_variance) and abs(ytd_variance) < abs(var):
                 explanation += "This appears to be a one-time spike rather than an ongoing trend. "
 
-            if pd.notna(row["Max Invoice"]) and row["Max Invoice"] >= 2 * row["Avg Invoice"]:
+            if pd.notna(row.get("Max Invoice")) and row["Max Invoice"] >= 2 * row["Avg Invoice"]:
                 explanation += f"Invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f} is over 2× the average. "
-            elif pd.isna(row["Total Invoiced"]) or row["Total Invoiced"] == 0:
+            elif pd.isna(row.get("Total Invoiced")) or row.get("Total Invoiced") == 0:
                 explanation += "No invoicing activity recorded this month. "
             else:
                 explanation += f"Total invoiced: ${row['Total Invoiced']:,.2f}. "
@@ -146,10 +146,10 @@ if uploaded_file:
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        output_df = df_merged[[
+        output_df = df_merged[[col for col in [
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
-        ]]
+        ] if col in df_merged.columns]]
 
         st.success("Explanation generation complete ✅")
         st.dataframe(output_df, use_container_width=True)
