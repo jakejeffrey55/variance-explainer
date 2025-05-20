@@ -28,16 +28,19 @@ if uploaded_file:
         st.write("✅ Invoice Columns:", df_invoices.columns.tolist())
 
         df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
-        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
+        df_asset["GL Code"] = pd.to_numeric(df_asset["GL Code"], errors="coerce").dropna().astype(int).astype(str).str.zfill(4)
+
         df_chart = df_chart.rename(columns={
             'ACCOUNT NUMBER': 'GL Code',
             'ACCOUNT TITLE': 'Title',
             'ACCOUNT DESCRIPTION': 'Description'
         })
         df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
+
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
-        df_asset["GL Type"] = df_asset["GL Code"].astype(float).apply(
+
+        df_asset["GL Type"] = pd.to_numeric(df_asset["GL Code"], errors="coerce").apply(
             lambda x: "Income" if 4000 <= x < 5000 else ("Expense" if 5000 <= x < 9000 else "Other")
         )
 
