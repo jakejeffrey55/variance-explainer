@@ -120,7 +120,7 @@ if uploaded_file:
                     per_unit = row["Total Invoiced"] / total_units
                     explanation += f"That equals approx. ${per_unit:,.2f} per unit. "
 
-            if not gl_df_raw.empty and gl in gl_df_raw["GL Code"].values:
+            if not gl_df_raw.empty and "GL Code" in gl_df_raw.columns and gl in gl_df_raw["GL Code"].values:
                 memos = gl_df_raw[gl_df_raw["GL Code"] == gl]["Memo / Description"].dropna()
                 if not memos.empty:
                     top_memos = memos.value_counts().head(2).index.tolist()
