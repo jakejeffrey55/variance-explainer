@@ -92,6 +92,10 @@ if uploaded_file:
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
         df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
 
+        st.write("GL File Columns:", gl_df_raw.columns.tolist())
+        st.write("First 5 GL rows:")
+        st.write(gl_df_raw.head())
+
         def generate_explanation(row):
             if not row["Explain"]:
                 return ""
