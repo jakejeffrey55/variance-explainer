@@ -28,7 +28,8 @@ if uploaded_file:
         st.write("✅ Invoice Columns:", df_invoices.columns.tolist())
 
         df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
-        df_asset["GL Code"] = pd.to_numeric(df_asset["GL Code"], errors="coerce").dropna().astype(int).astype(str).str.zfill(4)
+        df_asset["GL Code"] = pd.to_numeric(df_asset["GL Code"], errors="coerce").round(0)
+        df_asset["GL Code"] = df_asset["GL Code"].apply(lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan)
 
         df_chart = df_chart.rename(columns={
             'ACCOUNT NUMBER': 'GL Code',
