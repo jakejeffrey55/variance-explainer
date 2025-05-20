@@ -87,6 +87,9 @@ if uploaded_file:
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
         df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
 
+        st.write("✅ GL File Loaded Columns:", gl_df_raw.columns.tolist())
+        st.write("✅ First few GL Codes:", gl_df_raw['GL Code'].dropna().unique()[:5])
+
         def generate_explanation(row):
             if not row["Explain"]:
                 return ""
