@@ -72,7 +72,10 @@ if uploaded_file:
 
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
-            gl_df_raw.columns = ["GL Code", "Account Name", "Post Date", "Effective Date", "Journal", "Location", "Memo / Description", "Debit", "Credit"] + list(gl_df_raw.columns[9:])
+            gl_df_raw.columns = [
+                "GL Code", "GL Name", "Post Date", "Effective Date", "Unused1", "Account Name",
+                "Memo / Description", "Unused2", "Journal", "Unused3", "Debit", "Credit"
+            ] + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = gl_df_raw["GL Code"].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
         else:
             gl_df_raw = pd.DataFrame()
