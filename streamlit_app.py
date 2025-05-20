@@ -8,6 +8,13 @@ st.title("📊 Cortland Asset Variance Explainer")
 uploaded_file = st.file_uploader("Upload your Excel file (Asset Review, Chart of Accounts, Invoices)", type=["xlsx"])
 trends_file = st.file_uploader("Upload your Trends file (Occupancy, Leasing, Move-ins/outs, Unit Mix)", type=["xlsx"])
 
+# Sentiment prompts
+with st.expander("📣 Add Context for this Month"):
+    major_event = st.text_input("Was there a major event this month? (e.g. vendor change, storm, freeze, emergency repair)")
+    delay_note = st.text_input("Were there any billing delays, credits, or missing invoices?")
+    moveout_note = st.text_input("Any known spike in move-outs or turnover pressure?")
+    staffing_note = st.text_input("If payroll is under budget, is the site currently understaffed?")
+
 if uploaded_file:
     try:
         xls = pd.ExcelFile(uploaded_file)
@@ -15,7 +22,7 @@ if uploaded_file:
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
         df_invoices = pd.read_excel(xls, sheet_name="Invoices ")
 
-        df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\\d{4})')[0]
+        df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
         df_asset["GL Type"] = df_asset["GL Code"].astype(float).apply(
@@ -60,14 +67,13 @@ if uploaded_file:
             occ_df = leasing_df = movein_df = moveout_df = unitmix_df = None
             total_units = np.nan
 
+        # Explain only rows with actual GLs and numeric activity
         def should_explain(row):
             acct = str(row["Accounts"])
             gl_code = row["GL Code"]
             if pd.isna(gl_code): return False
-            if any(x in acct for x in ["Total", "Net", "Income"]): return False
-            if acct.startswith(("4011", "4012", "6", "7", "8999")): return False
-            if abs(row["$ Variance"] or 0) < 1000: return False
-            if abs(row["% Variance"] or 0) < 0.1: return False
+            if pd.isna(row["Actuals"]) and pd.isna(row["$ Variance"]): return False
+            if acct.lower().strip() in ["total", "net", "income"]: return False
             return True
 
         df_asset["Explain"] = df_asset.apply(should_explain, axis=1)
@@ -75,12 +81,6 @@ if uploaded_file:
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
         df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
-
-        understaffed_flag = "No"
-        understaffed_gls = df_merged[(df_merged["GL Code"].isin(["5205", "5210"])) & (df_merged["$ Variance"] < -1000)]
-        if not understaffed_gls.empty:
-            st.warning("⚠️ Payroll is under budget. Is the property currently understaffed?")
-            understaffed_flag = st.radio("Staffing status", ["Yes", "No"], index=1)
 
         def generate_explanation(row):
             if not row["Explain"]:
@@ -90,33 +90,32 @@ if uploaded_file:
             desc = row["Description"] or "this account"
             var = row["$ Variance"]
             direction = "Unfavorable" if var < 0 else "Favorable"
+            explanation = f"{direction} variance in {desc} (GL {gl})."
 
-            if row["GL Type"] == "Income":
-                occ_note = ""
-                if occ_df is not None:
-                    latest = occ_df.sort_values("Month").iloc[-1]
-                    occ_note = f" Occupancy was {latest['Actual Occupancy']}% vs {latest['Budgeted Occupancy']}% budgeted."
-                return f"{direction} variance in {desc} (GL {gl}) may be tied to income shortfalls.{occ_note}"
-
-            if gl in ["5205", "5210"] and understaffed_flag == "Yes":
-                return f"{direction} variance in {desc} (GL {gl}) likely due to reduced staffing. Consider reviewing open positions."
+            if row["GL Type"] == "Income" and occ_df is not None:
+                occ_row = occ_df.sort_values("Month").iloc[-1]
+                explanation += f" Occupancy was {occ_row['Actual Occupancy']}% vs {occ_row['Budgeted Occupancy']}% budgeted."
 
             if pd.notna(row["Max Invoice"]) and row["Max Invoice"] >= 2 * row["Avg Invoice"]:
-                return f"{direction} variance in {desc} (GL {gl}) due to invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f}, which exceeds 2× the average of ${row['Avg Invoice']:,.2f}."
+                explanation += f" Invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f} is over 2× the average of ${row['Avg Invoice']:,.2f}."
+            elif pd.isna(row["Total Invoiced"]) or row["Total Invoiced"] == 0:
+                explanation += " No recorded invoices found for this GL."
+            else:
+                explanation += f" Total invoiced: ${row['Total Invoiced']:,.2f}."
+                if not pd.isna(total_units) and total_units > 0:
+                    per_unit = row["Total Invoiced"] / total_units
+                    explanation += f" That equals approx. ${per_unit:,.2f} per unit."
 
-            if moveout_df is not None and gl in ["5601", "5671"]:
-                mo_row = moveout_df.sort_values("Month").iloc[-1]
-                return f"{direction} variance in {desc} (GL {gl}) may relate to {mo_row['Move outs']} move-outs this month, which increases cleaning and service costs."
+            if row["GL Code"] in ["5205", "5210"] and staffing_note:
+                explanation += f" Payroll note: {staffing_note}"
+            if moveout_note and row["GL Code"] in ["5601", "5671"]:
+                explanation += f" Move-out context: {moveout_note}"
+            if delay_note:
+                explanation += f" Billing note: {delay_note}"
+            if major_event:
+                explanation += f" Notable event: {major_event}"
 
-            if pd.isna(row["Total Invoiced"]) or row["Total Invoiced"] == 0:
-                return f"{direction} variance in {desc} (GL {gl}) likely due to missing or unrecorded invoices."
-
-            unit_note = f" Total invoiced: ${row['Total Invoiced']:,.2f}."
-            if not pd.isna(total_units) and total_units > 0:
-                per_unit = row['Total Invoiced'] / total_units
-                unit_note += f" That equates to approx. ${per_unit:,.2f} per unit."
-
-            return f"{direction} variance in {desc} (GL {gl}).{unit_note}"
+            return explanation
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
