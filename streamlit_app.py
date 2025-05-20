@@ -78,7 +78,7 @@ if uploaded_file:
             ] + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = gl_df_raw["GL Code"].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
         else:
-            gl_df_raw = pd.DataFrame()
+            gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description"])
 
         def should_explain(row):
             gl_code = row["GL Code"]
@@ -123,7 +123,10 @@ if uploaded_file:
                     per_unit = row["Total Invoiced"] / total_units
                     explanation += f"That equals approx. ${per_unit:,.2f} per unit. "
 
-            if not gl_df_raw.empty and "GL Code" in gl_df_raw.columns and gl in gl_df_raw["GL Code"].values:
+            if (not gl_df_raw.empty
+                and "GL Code" in gl_df_raw.columns
+                and "Memo / Description" in gl_df_raw.columns
+                and gl in gl_df_raw["GL Code"].values):
                 memos = gl_df_raw[gl_df_raw["GL Code"] == gl]["Memo / Description"].dropna()
                 if not memos.empty:
                     top_memos = memos.value_counts().head(2).index.tolist()
@@ -156,4 +159,3 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
-
