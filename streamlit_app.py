@@ -6,8 +6,8 @@ st.set_page_config(page_title="Variance Explanation Generator", layout="wide")
 st.title("📊 Cortland Asset Variance Explainer")
 
 uploaded_file = st.file_uploader("Upload your Excel file (Asset Review, Chart of Accounts, Invoices)", type=["xlsx"])
-trends_file = st.file_uploader("Upload your Trends file (Occupancy, Leasing, Move-ins/outs, Unit Mix)", type=["xlsx"])
-gl_file = st.file_uploader("Upload your GL Ledger Report (CSV export)", type=["csv"])
+trends_file = st.file_uploader("Upload your Trends file (Occupancy, Leasing, Move-ins/Move-outs, Unit Mix)", type=["xlsx"])
+gl_file = st.file_uploader("Upload your General Ledger Report (.xlsx)", type=["xlsx"])
 
 # Sentiment prompts
 with st.expander("📣 Add Context for this Month"):
@@ -71,10 +71,11 @@ if uploaded_file:
             total_units = np.nan
 
         if gl_file:
-            df_gl = pd.read_csv(gl_file)
-            df_gl["GL Code"] = df_gl["GL Code"].astype(str).str.zfill(4)
+            gl_df_raw = pd.read_excel(gl_file, skiprows=7)
+            gl_df_raw.columns.values[0:2] = ['GL Code', 'GL Name']
+            gl_df_raw['GL Code'] = gl_df_raw['GL Code'].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
         else:
-            df_gl = pd.DataFrame()
+            gl_df_raw = pd.DataFrame()
 
         def should_explain(row):
             gl_code = row["GL Code"]
@@ -104,16 +105,13 @@ if uploaded_file:
 
             explanation = f"{direction} variance in {desc} (GL {gl}). "
 
-            # Trend logic
             if pd.notna(ytd_variance) and abs(ytd_variance) > abs(var):
                 explanation += f"YTD variance is growing (${ytd_variance:,.0f}), indicating a sustained overage pattern. "
             elif pd.notna(ytd_variance) and abs(ytd_variance) < abs(var):
                 explanation += "This appears to be a one-time spike rather than an ongoing trend. "
 
-            # Invoice details
             if pd.notna(row["Max Invoice"]) and row["Max Invoice"] >= 2 * row["Avg Invoice"]:
                 explanation += f"Invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f} is over 2× the average. "
-
             elif pd.isna(row["Total Invoiced"]) or row["Total Invoiced"] == 0:
                 explanation += "No invoicing activity recorded this month. "
             else:
@@ -122,14 +120,13 @@ if uploaded_file:
                     per_unit = row["Total Invoiced"] / total_units
                     explanation += f"That equals approx. ${per_unit:,.2f} per unit. "
 
-            # GL memo detail
-            if not df_gl.empty and gl in df_gl["GL Code"].values:
-                gl_memos = df_gl[df_gl["GL Code"] == gl]
-                top_memos = gl_memos["Memo"].dropna().value_counts().head(2).index.tolist()
-                if top_memos:
-                    explanation += f"Key GL entries: {', '.join(top_memos)}. "
+            if not gl_df_raw.empty and gl in gl_df_raw["GL Code"].values:
+                memos = gl_df_raw[gl_df_raw["GL Code"] == gl]["Memo / Description"].dropna()
+                if not memos.empty:
+                    top_memos = memos.value_counts().head(2).index.tolist()
+                    if top_memos:
+                        explanation += f" Top GL memos: {', '.join(top_memos)}. "
 
-            # Add user prompts if applicable
             if gl in ["5205", "5210"] and staffing_note:
                 explanation += f"Staffing note: {staffing_note}. "
             if moveout_note and gl in ["5601", "5671"]:
@@ -156,5 +153,3 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
-
-
