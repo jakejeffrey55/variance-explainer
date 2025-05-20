@@ -60,14 +60,9 @@ if uploaded_file:
 
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
-            occ_df = pd.read_excel(t_xls, sheet_name="Occupancy vs Budget")
-            leasing_df = pd.read_excel(t_xls, sheet_name="Leasing Trends")
-            movein_df = pd.read_excel(t_xls, sheet_name="Move ins")
-            moveout_df = pd.read_excel(t_xls, sheet_name="Move outs")
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
             total_units = pd.to_numeric(unitmix_df[unitmix_df.columns[1]].dropna().iloc[-1], errors='coerce')
         else:
-            occ_df = leasing_df = movein_df = moveout_df = unitmix_df = None
             total_units = np.nan
 
         if gl_file:
@@ -91,10 +86,6 @@ if uploaded_file:
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
         df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
-
-        st.write("GL File Columns:", gl_df_raw.columns.tolist())
-        st.write("First 5 GL rows:")
-        st.write(gl_df_raw.head())
 
         def generate_explanation(row):
             if not row["Explain"]:
@@ -163,3 +154,4 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
+
