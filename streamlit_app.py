@@ -23,20 +23,23 @@ if uploaded_file:
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
         df_invoices = pd.read_excel(xls, sheet_name="Invoices ")
 
+        st.write("✅ Asset Columns:", df_asset.columns.tolist())
+        st.write("✅ Chart Columns:", df_chart.columns.tolist())
+        st.write("✅ Invoice Columns:", df_invoices.columns.tolist())
+
         df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
         df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
+        df_chart = df_chart.rename(columns={
+            'ACCOUNT NUMBER': 'GL Code',
+            'ACCOUNT TITLE': 'Title',
+            'ACCOUNT DESCRIPTION': 'Description'
+        })
         df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
         df_asset["GL Type"] = df_asset["GL Code"].astype(float).apply(
             lambda x: "Income" if 4000 <= x < 5000 else ("Expense" if 5000 <= x < 9000 else "Other")
         )
-
-        df_chart = df_chart.rename(columns={
-            'ACCOUNT NUMBER': 'GL Code',
-            'ACCOUNT TITLE': 'Title',
-            'ACCOUNT DESCRIPTION': 'Description'
-        })
 
         df_invoices["GLCode"] = df_invoices["GLCode"].astype(str).str.zfill(4)
         df_invoices["SupplierInvoiceNumber"] = df_invoices["SupplierInvoiceNumber"].astype(str)
@@ -72,6 +75,8 @@ if uploaded_file:
                 "Memo / Description", "Unused2", "Journal", "Unused3", "Debit", "Credit"
             ] + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = gl_df_raw["GL Code"].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
+            st.write("✅ GL File Loaded Columns:", gl_df_raw.columns.tolist())
+            st.write("✅ First few GL Codes:", gl_df_raw['GL Code'].dropna().unique()[:5])
         else:
             gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description"])
 
@@ -86,9 +91,6 @@ if uploaded_file:
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
         df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
-
-        st.write("✅ GL File Loaded Columns:", gl_df_raw.columns.tolist())
-        st.write("✅ First few GL Codes:", gl_df_raw['GL Code'].dropna().unique()[:5])
 
         def generate_explanation(row):
             if not row["Explain"]:
@@ -157,4 +159,3 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
-
