@@ -87,7 +87,7 @@ if uploaded_file:
                 return ""
 
             gl = row["GL Code"]
-            desc = row["Description"] or "this account"
+            desc = row["Description"] if pd.notna(row["Description"]) else "this account"
             var = row["$ Variance"]
             direction = "Unfavorable" if var < 0 else "Favorable"
             explanation = f"{direction} variance in {desc} (GL {gl})."
