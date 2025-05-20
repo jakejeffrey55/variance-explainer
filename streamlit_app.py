@@ -27,9 +27,17 @@ if uploaded_file:
         st.write("✅ Chart Columns:", df_chart.columns.tolist())
         st.write("✅ Invoice Columns:", df_invoices.columns.tolist())
 
-        df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
-        df_asset["GL Code"] = pd.to_numeric(df_asset["GL Code"], errors="coerce").round(0)
-        df_asset["GL Code"] = df_asset["GL Code"].apply(lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan)
+        # Parse and clean GL Code numerically
+        df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r'(\\d{4})')[0]
+        df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
+
+        # Assign GL Type from numeric version
+        df_asset["GL Type"] = df_asset["GL Code Num"].apply(
+            lambda x: "Income" if 4000 <= x < 5000 else ("Expense" if 5000 <= x < 9000 else "Other") if pd.notna(x) else "Other"
+        )
+        
+        # Final GL Code as string
+        df_asset["GL Code"] = df_asset["GL Code Num"].apply(lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan)
 
         df_chart = df_chart.rename(columns={
             'ACCOUNT NUMBER': 'GL Code',
