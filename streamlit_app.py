@@ -71,9 +71,9 @@ if uploaded_file:
             total_units = np.nan
 
         if gl_file:
-            gl_df_raw = pd.read_excel(gl_file, skiprows=7)
-            gl_df_raw.columns.values[0:2] = ['GL Code', 'GL Name']
-            gl_df_raw['GL Code'] = gl_df_raw['GL Code'].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
+            gl_df_raw = pd.read_excel(gl_file, skiprows=8)
+            gl_df_raw = gl_df_raw.rename(columns={"Account": "GL Code"})
+            gl_df_raw["GL Code"] = gl_df_raw["GL Code"].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
         else:
             gl_df_raw = pd.DataFrame()
 
