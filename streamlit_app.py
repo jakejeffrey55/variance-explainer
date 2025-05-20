@@ -31,7 +31,6 @@ if uploaded_file:
         df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
         df_asset["GL Type"] = df_asset["GL Code Num"].apply(lambda x: "Income" if 4000 <= x < 5000 else ("Expense" if 5000 <= x < 9000 else "Other") if pd.notna(x) else "Other")
         df_asset["GL Code"] = df_asset["GL Code Num"].apply(lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan)
-        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
 
         df_chart = df_chart.rename(columns={
             'ACCOUNT NUMBER': 'GL Code',
@@ -39,6 +38,9 @@ if uploaded_file:
             'ACCOUNT DESCRIPTION': 'Description'
         })
         df_chart["GL Code"] = pd.to_numeric(df_chart["GL Code"], errors="coerce").dropna().astype(int).astype(str).str.zfill(4)
+
+        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
+        df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
 
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
@@ -89,6 +91,9 @@ if uploaded_file:
             return True
 
         df_asset["Explain"] = df_asset.apply(should_explain, axis=1)
+
+        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
+        df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
 
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
         df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
