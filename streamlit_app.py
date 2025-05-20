@@ -7,6 +7,7 @@ st.title("📊 Cortland Asset Variance Explainer")
 
 uploaded_file = st.file_uploader("Upload your Excel file (Asset Review, Chart of Accounts, Invoices)", type=["xlsx"])
 trends_file = st.file_uploader("Upload your Trends file (Occupancy, Leasing, Move-ins/outs, Unit Mix)", type=["xlsx"])
+gl_file = st.file_uploader("Upload your GL Ledger Report (CSV export)", type=["csv"])
 
 # Sentiment prompts
 with st.expander("📣 Add Context for this Month"):
@@ -23,6 +24,8 @@ if uploaded_file:
         df_invoices = pd.read_excel(xls, sheet_name="Invoices ")
 
         df_asset["GL Code"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
+        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
+        df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
         df_asset["GL Type"] = df_asset["GL Code"].astype(float).apply(
@@ -67,13 +70,16 @@ if uploaded_file:
             occ_df = leasing_df = movein_df = moveout_df = unitmix_df = None
             total_units = np.nan
 
-        # Explain only rows with actual GLs and numeric activity
+        if gl_file:
+            df_gl = pd.read_csv(gl_file)
+            df_gl["GL Code"] = df_gl["GL Code"].astype(str).str.zfill(4)
+        else:
+            df_gl = pd.DataFrame()
+
         def should_explain(row):
-            acct = str(row["Accounts"])
             gl_code = row["GL Code"]
             if pd.isna(gl_code): return False
             if pd.isna(row["Actuals"]) and pd.isna(row["$ Variance"]): return False
-            if acct.lower().strip() in ["total", "net", "income"]: return False
             return True
 
         df_asset["Explain"] = df_asset.apply(should_explain, axis=1)
@@ -88,40 +94,58 @@ if uploaded_file:
 
             gl = row["GL Code"]
             desc = row["Description"] if pd.notna(row["Description"]) else "this account"
+            actual = row["Actuals"]
+            budget = row["Budget Reporting"]
+            ytd_actual = row.get("YTD Actuals", np.nan)
+            ytd_budget = row.get("YTD Budget", np.nan)
+            ytd_variance = ytd_actual - ytd_budget if pd.notna(ytd_actual) and pd.notna(ytd_budget) else np.nan
             var = row["$ Variance"]
             direction = "Unfavorable" if var < 0 else "Favorable"
-            explanation = f"{direction} variance in {desc} (GL {gl})."
 
-            if row["GL Type"] == "Income" and occ_df is not None:
-                occ_row = occ_df.sort_values("Month").iloc[-1]
-                explanation += f" Occupancy was {occ_row['Actual Occupancy']}% vs {occ_row['Budgeted Occupancy']}% budgeted."
+            explanation = f"{direction} variance in {desc} (GL {gl}). "
 
+            # Trend logic
+            if pd.notna(ytd_variance) and abs(ytd_variance) > abs(var):
+                explanation += f"YTD variance is growing (${ytd_variance:,.0f}), indicating a sustained overage pattern. "
+            elif pd.notna(ytd_variance) and abs(ytd_variance) < abs(var):
+                explanation += "This appears to be a one-time spike rather than an ongoing trend. "
+
+            # Invoice details
             if pd.notna(row["Max Invoice"]) and row["Max Invoice"] >= 2 * row["Avg Invoice"]:
-                explanation += f" Invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f} is over 2× the average of ${row['Avg Invoice']:,.2f}."
+                explanation += f"Invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f} is over 2× the average. "
+
             elif pd.isna(row["Total Invoiced"]) or row["Total Invoiced"] == 0:
-                explanation += " No recorded invoices found for this GL."
+                explanation += "No invoicing activity recorded this month. "
             else:
-                explanation += f" Total invoiced: ${row['Total Invoiced']:,.2f}."
+                explanation += f"Total invoiced: ${row['Total Invoiced']:,.2f}. "
                 if not pd.isna(total_units) and total_units > 0:
                     per_unit = row["Total Invoiced"] / total_units
-                    explanation += f" That equals approx. ${per_unit:,.2f} per unit."
+                    explanation += f"That equals approx. ${per_unit:,.2f} per unit. "
 
-            if row["GL Code"] in ["5205", "5210"] and staffing_note:
-                explanation += f" Payroll note: {staffing_note}"
-            if moveout_note and row["GL Code"] in ["5601", "5671"]:
-                explanation += f" Move-out context: {moveout_note}"
+            # GL memo detail
+            if not df_gl.empty and gl in df_gl["GL Code"].values:
+                gl_memos = df_gl[df_gl["GL Code"] == gl]
+                top_memos = gl_memos["Memo"].dropna().value_counts().head(2).index.tolist()
+                if top_memos:
+                    explanation += f"Key GL entries: {', '.join(top_memos)}. "
+
+            # Add user prompts if applicable
+            if gl in ["5205", "5210"] and staffing_note:
+                explanation += f"Staffing note: {staffing_note}. "
+            if moveout_note and gl in ["5601", "5671"]:
+                explanation += f"Move-out context: {moveout_note}. "
             if delay_note:
-                explanation += f" Billing note: {delay_note}"
+                explanation += f"Billing delay note: {delay_note}. "
             if major_event:
-                explanation += f" Notable event: {major_event}"
+                explanation += f"Event context: {major_event}. "
 
-            return explanation
+            return explanation.strip()
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
         output_df = df_merged[[
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
-            "% Variance", "Explanation"
+            "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
         ]]
 
         st.success("Explanation generation complete ✅")
@@ -132,4 +156,5 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
+
 
