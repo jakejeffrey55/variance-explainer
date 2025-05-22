@@ -39,12 +39,6 @@ if uploaded_file:
         # --- Extract and classify GL codes in the Asset sheet ---
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r"(\d{4})")[0]
         df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
-        df_asset["GL Type"] = df_asset["GL Code Num"].apply(
-            lambda x: "Income" if 4000 <= x < 5000
-            else ("Expense" if 5000 <= x < 9000 else "Other")
-            if pd.notna(x)
-            else "Other"
-        )
         df_asset["GL Code"] = df_asset["GL Code Num"].apply(
             lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan
         )
@@ -63,7 +57,7 @@ if uploaded_file:
             .str.zfill(4)
         )
 
-        # Zero-pad consistency
+        # Ensure zero-padding consistency
         df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
         df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
 
@@ -71,7 +65,7 @@ if uploaded_file:
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        # Remove totals & blanks
+        # Remove totals & blank rows
         df_asset = df_asset[
             ~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)
         ]
@@ -82,11 +76,9 @@ if uploaded_file:
             (df_asset["$ Variance"].abs() >= 2000)
             | (df_asset["% Variance"].abs() >= 10)
         )
-        df_asset["Explain"] = df_asset["Highlight"] & df_asset["GL Code"].notna()
 
-        # Only keep the GL codes that need explaining
-        relevant_gl_codes = df_asset.loc[df_asset["Explain"], "GL Code"].dropna().unique()
-        df_asset = df_asset[df_asset["GL Code"].isin(relevant_gl_codes)]
+        # Only keep rows that were highlighted
+        df_asset = df_asset[df_asset["Highlight"]]
 
         # --- Load Trends for total units if provided ---
         if trends_file:
@@ -99,7 +91,7 @@ if uploaded_file:
         else:
             total_units = np.nan
 
-        # --- Load GL journal entries if provided ---
+        # --- Load GL journal entries if provided (filtered to only codes we care about) ---
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
             gl_df_raw.columns = [
@@ -112,17 +104,13 @@ if uploaded_file:
                 .str.extract(r"(\d{4})")[0]
                 .str.zfill(4)
             )
-            gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(relevant_gl_codes)]
-
-            st.write("✅ GL File Loaded Columns:", gl_df_raw.columns.tolist())
-            st.write(
-                "✅ First few GL Codes:",
-                gl_df_raw["GL Code"].dropna().unique()[:5]
-            )
+            # only keep entries whose GL Code appears in our highlighted rows
+            codes = df_asset["GL Code"].dropna().unique()
+            gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(codes)]
         else:
-            gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description"])
+            gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description", "Debit", "Credit"])
 
-        # Merge descriptions in
+        # Merge in Chart descriptions
         df_merged = df_asset.merge(
             df_chart[["GL Code", "Description"]],
             how="left",
@@ -131,22 +119,23 @@ if uploaded_file:
 
         # Explanation generator
         def generate_explanation(row):
-            if not row["Explain"] or pd.isna(row["GL Code"]):
-                return ""
+            label = f"GL {row['GL Code']}" if pd.notna(row["GL Code"]) else row["Accounts"]
+            desc = row.get("Description")
+            if pd.isna(desc):
+                desc = row["Accounts"]
 
-            gl = row["GL Code"]
-            desc = row.get("Description", "this account")
             actual = row.get("Actuals", np.nan)
             budget = row.get("Budget Reporting", np.nan)
             ytd_actual = row.get("YTD Actuals", np.nan)
             ytd_budget = row.get("YTD Budget", np.nan)
             var = row.get("$ Variance", 0)
             pct_var = row.get("% Variance", 0)
+            direction = "unfavorable" if var < 0 else "favorable"
 
             explanation = (
-                f"GL {gl} – {desc}: This month's actuals of "
+                f"{label} – {desc}: This month's actuals of "
                 f"${actual:,.0f} vs budget ${budget:,.0f} "
-                f"({var:+,.0f}, {pct_var:+.1f}%). "
+                f"({direction} by ${abs(var):,.0f}, {abs(pct_var):.1f}%). "
             )
 
             # YTD context
@@ -157,26 +146,27 @@ if uploaded_file:
                 else:
                     explanation += "Appears to be a one-time deviation. "
 
-            # Journal entry context
-            if not gl_df_raw.empty and gl in gl_df_raw["GL Code"].values:
-                entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
-                entry_count = len(entries)
-                entry_total = entries[["Debit", "Credit"]].fillna(0).sum(axis=1).sum()
-                avg_entry = entry_total / entry_count if entry_count else 0
-                max_entry = entries[["Debit", "Credit"]].fillna(0).sum(axis=1).max()
+            # Journal entries context
+            if pd.notna(row["GL Code"]) and not gl_df_raw.empty:
+                entries = gl_df_raw[gl_df_raw["GL Code"] == row["GL Code"]]
+                if not entries.empty:
+                    entry_count = len(entries)
+                    totals = entries[["Debit", "Credit"]].fillna(0).sum(axis=1)
+                    entry_total = totals.sum()
+                    avg_entry = entry_total / entry_count if entry_count else 0
+                    max_entry = totals.max()
 
-                if max_entry >= 2 * avg_entry:
-                    explanation += (
-                        f"Unusually large journal entry of ${max_entry:,.0f} "
-                        f"vs average ${avg_entry:,.0f}. "
-                    )
-                elif entry_count > 5:
-                    explanation += f"High entry count ({entry_count}) may have contributed. "
+                    if max_entry >= 2 * avg_entry:
+                        explanation += (
+                            f"Unusually large journal entry of ${max_entry:,.0f} vs avg ${avg_entry:,.0f}. "
+                        )
+                    elif entry_count > 5:
+                        explanation += f"High entry count ({entry_count}) may have contributed. "
 
-                memos = entries["Memo / Description"].dropna()
-                if not memos.empty:
-                    top_memos = memos.value_counts().head(2).index.tolist()
-                    explanation += f"Top memos: {', '.join(top_memos)}. "
+                    memos = entries["Memo / Description"].dropna()
+                    if not memos.empty:
+                        top_memos = memos.value_counts().head(2).index.tolist()
+                        explanation += f"Top memos: {', '.join(top_memos)}. "
 
             # Per-unit cost
             if pd.notna(total_units) and total_units > 0 and pd.notna(actual):
@@ -184,9 +174,9 @@ if uploaded_file:
                 explanation += f"Per-unit cost ≈ ${per_unit:,.2f}. "
 
             # Sentiment context
-            if gl in ["5205", "5210"] and staffing_note:
+            if row["GL Code"] in ["5205", "5210"] and staffing_note:
                 explanation += f"Staffing note: {staffing_note}. "
-            if gl in ["5601", "5671"] and moveout_note:
+            if row["GL Code"] in ["5601", "5671"] and moveout_note:
                 explanation += f"Move-out context: {moveout_note}. "
             if delay_note:
                 explanation += f"Billing delay note: {delay_note}. "
@@ -197,7 +187,7 @@ if uploaded_file:
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        # Final output
+        # Show everything we merged
         cols = [
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
