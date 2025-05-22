@@ -43,12 +43,19 @@ if uploaded_file:
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        df_asset["Explain"] = df_asset.apply(
-            lambda row: False if pd.isna(row["GL Code"]) or (pd.isna(row.get("Actuals")) and pd.isna(row.get("$ Variance"))) else True,
-            axis=1
+        # Filter out totals and blanks
+        df_asset = df_asset[~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)]
+        df_asset = df_asset[df_asset["Accounts"].astype(str).str.strip() != ""]
+
+        # Highlight filter logic (simulate yellow highlight via formula logic)
+        df_asset["Highlight"] = (
+            (df_asset["$ Variance"].abs() >= 2000) & (df_asset["% Variance"].abs() >= 10)
         )
 
-        relevant_gl_codes = df_asset[df_asset["Explain"]]["GL Code"].unique()
+        df_asset["Explain"] = df_asset["Highlight"] & df_asset["GL Code"].notna()
+
+        relevant_gl_codes = df_asset[df_asset["Explain"]]["GL Code"].dropna().unique()
+        df_asset = df_asset[df_asset["GL Code"].isin(relevant_gl_codes)]
 
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
@@ -73,50 +80,67 @@ if uploaded_file:
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
 
         def generate_explanation(row):
-            if not row["Explain"]:
-                return ""
+    if not row["Explain"] or pd.isna(row["GL Code"]):
+        return ""
 
-            gl = row["GL Code"]
-            desc = row.get("Description", "this account")
-            actual = row.get("Actuals", np.nan)
-            budget = row.get("Budget Reporting", np.nan)
-            ytd_actual = row.get("YTD Actuals", np.nan)
-            ytd_budget = row.get("YTD Budget", np.nan)
-            ytd_variance = ytd_actual - ytd_budget if pd.notna(ytd_actual) and pd.notna(ytd_budget) else np.nan
-            var = row.get("$ Variance", 0)
-            direction = "Unfavorable" if var < 0 else "Favorable"
+    gl = row["GL Code"]
+    desc = row.get("Description", "this account")
+    actual = row.get("Actuals", np.nan)
+    budget = row.get("Budget Reporting", np.nan)
+    ytd_actual = row.get("YTD Actuals", np.nan)
+    ytd_budget = row.get("YTD Budget", np.nan)
+    var = row.get("$ Variance", 0)
+    pct_var = row.get("% Variance", 0)
+    direction = "unfavorable" if var < 0 else "favorable"
 
-            explanation = f"{direction} variance in {desc} (GL {gl}). "
+    explanation = f"GL {gl} – {desc}: This month's actuals of ${actual:,.0f} exceeded the ${budget:,.0f} budget by ${abs(var):,.0f} ({abs(pct_var):.1f}%). "
 
-            if pd.notna(ytd_variance) and abs(ytd_variance) > abs(var):
-                explanation += f"YTD variance is growing (${ytd_variance:,.0f}), indicating a sustained overage pattern. "
-            elif pd.notna(ytd_variance) and abs(ytd_variance) < abs(var):
-                explanation += "This appears to be a one-time spike rather than an ongoing trend. "
+    # YTD variance context
+    if pd.notna(ytd_actual) and pd.notna(ytd_budget):
+        ytd_variance = ytd_actual - ytd_budget
+        if abs(ytd_variance) > abs(var):
+            explanation += f"The YTD variance of ${ytd_variance:,.0f} suggests a continuing trend. "
+        else:
+            explanation += "This appears to be a one-time deviation. "
 
-            if (not gl_df_raw.empty
-                and "GL Code" in gl_df_raw.columns
-                and "Memo / Description" in gl_df_raw.columns
-                and gl in gl_df_raw["GL Code"].values):
-                memos = gl_df_raw[gl_df_raw["GL Code"] == gl]["Memo / Description"].dropna()
-                if not memos.empty:
-                    top_memos = memos.value_counts().head(2).index.tolist()
-                    if top_memos:
-                        explanation += f" Top GL memos: {', '.join(top_memos)}. "
+    # GL context
+    if not gl_df_raw.empty and gl in gl_df_raw["GL Code"].values:
+        entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
+        entry_count = len(entries)
+        entry_total = entries[["Debit", "Credit"]].fillna(0).sum(axis=1).sum()
+        avg_entry = entry_total / entry_count if entry_count else 0
+        max_entry = entries[["Debit", "Credit"]].fillna(0).sum(axis=1).max()
 
-            if gl in ["5205", "5210"] and staffing_note:
-                explanation += f"Staffing note: {staffing_note}. "
-            if moveout_note and gl in ["5601", "5671"]:
-                explanation += f"Move-out context: {moveout_note}. "
-            if delay_note:
-                explanation += f"Billing delay note: {delay_note}. "
-            if major_event:
-                explanation += f"Event context: {major_event}. "
+        if max_entry >= 2 * avg_entry:
+            explanation += f"There is an unusually large journal entry of ${max_entry:,.0f} compared to the average of ${avg_entry:,.0f}. "
+        elif entry_count > 5:
+            explanation += f"A higher number of entries ({entry_count}) this month may have contributed. "
 
-            return explanation.strip()
+        memos = entries["Memo / Description"].dropna()
+        if not memos.empty:
+            top_memos = memos.value_counts().head(2).index.tolist()
+            explanation += f" Top memo descriptions include: {', '.join(top_memos)}. "
+
+    # Per-unit cost if available
+    if not pd.isna(total_units) and total_units > 0 and pd.notna(actual):
+        per_unit = actual / total_units
+        explanation += f" Per-unit cost is approximately ${per_unit:,.2f}. "
+
+    # Sentiment context
+    if gl in ["5205", "5210"] and staffing_note:
+        explanation += f" Staffing note: {staffing_note}."
+    if moveout_note and gl in ["5601", "5671"]:
+        explanation += f" Move-out context: {moveout_note}."
+    if delay_note:
+        explanation += f" Billing delay note: {delay_note}."
+    if major_event:
+        explanation += f" Event context: {major_event}."
+
+    return explanation.strip()
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        output_df = df_merged[[col for col in [
+        output_df = df_merged[df_merged["GL Code"].notna()][[col for col in [
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
         ] if col in df_merged.columns]]
@@ -129,5 +153,6 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
+
 
 
