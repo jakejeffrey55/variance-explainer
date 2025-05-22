@@ -15,7 +15,6 @@ gl_file = st.file_uploader(
     "Upload your General Ledger Report (.xlsx)", type=["xlsx"]
 )
 
-# Sentiment prompts
 with st.expander("📣 Add Context for this Month"):
     major_event = st.text_input(
         "Was there a major event this month? (e.g. vendor change, storm, freeze, emergency repair)"
@@ -28,12 +27,10 @@ with st.expander("📣 Add Context for this Month"):
 
 if uploaded_file:
     try:
-        # --- Load Asset Review & Chart of Accounts ---
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
 
-        # Extract GL codes
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r"(\d{4})")[0]
         df_asset["GL Code"] = (
             pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
@@ -55,7 +52,6 @@ if uploaded_file:
             .str.zfill(4)
         )
 
-        # Clean and filter Asset sheet
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
         df_asset = df_asset[
@@ -68,7 +64,6 @@ if uploaded_file:
         )
         df_asset = df_asset[df_asset["Highlight"]]
 
-        # Total units from Trends
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
@@ -79,7 +74,6 @@ if uploaded_file:
         else:
             total_units = np.nan
 
-        # Load GL journal entries for only the highlighted codes
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
             gl_df_raw.columns = [
@@ -97,18 +91,23 @@ if uploaded_file:
         else:
             gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description", "Debit", "Credit"])
 
-        # Merge in descriptions
         df_merged = df_asset.merge(
             df_chart[["GL Code", "Description"]],
             how="left",
             on="GL Code"
         )
 
-        # New explanation generator: we **use** the Description to guide the story
         def generate_explanation(row):
             gl = row["GL Code"]
-            desc = row.get("Description") or row["Accounts"]
+            # coerce description to string
+            raw_desc = row.get("Description")
+            if pd.isna(raw_desc):
+                desc = row["Accounts"]
+            else:
+                desc = raw_desc
+            desc = str(desc)
             desc_low = desc.lower()
+
             actual = row.get("Actuals", np.nan)
             budget = row.get("Budget Reporting", np.nan)
             ytd_actual = row.get("YTD Actuals", np.nan)
@@ -117,14 +116,12 @@ if uploaded_file:
             pct_var = row.get("% Variance", 0)
             direction = "below" if var < 0 else "above"
 
-            # Frame with what the account **is**
             explanation = (
                 f"GL {gl} covers **{desc}**, an account that tracks {desc_low}. "
                 f"This month’s actuals of ${actual:,.0f} came in {direction} "
                 f"the ${budget:,.0f} budget by ${abs(var):,.0f} ({abs(pct_var):.1f}%). "
             )
 
-            # YTD trend
             if pd.notna(ytd_actual) and pd.notna(ytd_budget):
                 ytd_var = ytd_actual - ytd_budget
                 trend = "continuing" if abs(ytd_var) > abs(var) else "one-off"
@@ -132,7 +129,6 @@ if uploaded_file:
                     f"The YTD variance of ${ytd_var:,.0f} suggests a {trend} trend. "
                 )
 
-            # Journal entry deep-dive (filter out phase splits)
             if gl and not gl_df_raw.empty:
                 entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
                 if not entries.empty:
@@ -152,7 +148,6 @@ if uploaded_file:
                     elif entry_count > 5:
                         explanation += "Elevated entry volume also played a role. "
 
-                    # Pull key invoices, remove Village splits
                     memos = entries["Memo / Description"].dropna()
                     core = (
                         memos[~memos.str.contains("Village", case=False)]
@@ -163,12 +158,10 @@ if uploaded_file:
                     if top:
                         explanation += f"Key invoices: {', '.join(top)}. "
 
-            # Per-unit perspective
             if pd.notna(total_units) and total_units > 0 and pd.notna(actual):
                 per_u = actual / total_units
                 explanation += f"That’s about ${per_u:,.2f} per unit. "
 
-            # Contextual notes
             if desc_low.find("salary") != -1 and staffing_note:
                 explanation += f"Staffing note: {staffing_note}. "
             if moveout_note and any(k in desc_low for k in ["turnover", "move-out"]):
@@ -182,7 +175,6 @@ if uploaded_file:
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        # Display results
         cols = [
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
@@ -191,7 +183,6 @@ if uploaded_file:
 
         st.success("Explanation generation complete ✅")
         st.dataframe(output_df, use_container_width=True)
-
         st.download_button(
             "⬇️ Download Results as CSV",
             data=output_df.to_csv(index=False).encode("utf-8"),
