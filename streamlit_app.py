@@ -5,7 +5,7 @@ import numpy as np
 st.set_page_config(page_title="Variance Explanation Generator", layout="wide")
 st.title("📊 Cortland Asset Variance Explainer")
 
-uploaded_file = st.file_uploader("Upload your Excel file (Asset Review, Chart of Accounts, Invoices)", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload your Excel file (Asset Review, Chart of Accounts)", type=["xlsx"])
 trends_file = st.file_uploader("Upload your Trends file (Occupancy, Leasing, Move-ins/Move-outs, Unit Mix)", type=["xlsx"])
 gl_file = st.file_uploader("Upload your General Ledger Report (.xlsx)", type=["xlsx"])
 
@@ -21,11 +21,9 @@ if uploaded_file:
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
-        df_invoices = pd.read_excel(xls, sheet_name="Invoices ")
 
         st.write("✅ Asset Columns:", df_asset.columns.tolist())
         st.write("✅ Chart Columns:", df_chart.columns.tolist())
-        st.write("✅ Invoice Columns:", df_invoices.columns.tolist())
 
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
         df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
@@ -45,25 +43,12 @@ if uploaded_file:
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        df_invoices["GLCode"] = df_invoices["GLCode"].astype(str).str.zfill(4)
-        df_invoices["SupplierInvoiceNumber"] = df_invoices["SupplierInvoiceNumber"].astype(str)
-
-        invoice_stats = (
-            df_invoices.groupby("GLCode")["SUM OF LineItemTotal"]
-            .agg(['mean', 'max', 'idxmax'])
-            .reset_index()
-            .rename(columns={"mean": "Avg Invoice", "max": "Max Invoice"})
-        )
-        invoice_stats = invoice_stats.merge(
-            df_invoices[["SupplierInvoiceNumber", "SUM OF LineItemTotal"]],
-            left_on="idxmax", right_index=True, how="left"
+        df_asset["Explain"] = df_asset.apply(
+            lambda row: False if pd.isna(row["GL Code"]) or (pd.isna(row.get("Actuals")) and pd.isna(row.get("$ Variance"))) else True,
+            axis=1
         )
 
-        invoice_totals = (
-            df_invoices.groupby("GLCode")["SUM OF LineItemTotal"]
-            .sum().reset_index()
-            .rename(columns={"SUM OF LineItemTotal": "Total Invoiced"})
-        )
+        relevant_gl_codes = df_asset[df_asset["Explain"]]["GL Code"].unique()
 
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
@@ -79,25 +64,13 @@ if uploaded_file:
                 "Memo / Description", "Unused2", "Journal", "Unused3", "Debit", "Credit"
             ] + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = gl_df_raw["GL Code"].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
+            gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(relevant_gl_codes)]
             st.write("✅ GL File Loaded Columns:", gl_df_raw.columns.tolist())
             st.write("✅ First few GL Codes:", gl_df_raw['GL Code'].dropna().unique()[:5])
         else:
             gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description"])
 
-        def should_explain(row):
-            gl_code = row["GL Code"]
-            if pd.isna(gl_code): return False
-            if pd.isna(row.get("Actuals")) and pd.isna(row.get("$ Variance")): return False
-            return True
-
-        df_asset["Explain"] = df_asset.apply(should_explain, axis=1)
-
-        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
-        df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
-
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
-        df_merged = df_merged.merge(invoice_totals, how="left", left_on="GL Code", right_on="GLCode")
-        df_merged = df_merged.merge(invoice_stats, how="left", left_on="GL Code", right_on="GLCode", suffixes=("", "_stat"))
 
         def generate_explanation(row):
             if not row["Explain"]:
@@ -119,16 +92,6 @@ if uploaded_file:
                 explanation += f"YTD variance is growing (${ytd_variance:,.0f}), indicating a sustained overage pattern. "
             elif pd.notna(ytd_variance) and abs(ytd_variance) < abs(var):
                 explanation += "This appears to be a one-time spike rather than an ongoing trend. "
-
-            if pd.notna(row.get("Max Invoice")) and row["Max Invoice"] >= 2 * row["Avg Invoice"]:
-                explanation += f"Invoice #{row['SupplierInvoiceNumber']} for ${row['Max Invoice']:,.2f} is over 2× the average. "
-            elif pd.isna(row.get("Total Invoiced")) or row.get("Total Invoiced") == 0:
-                explanation += "No invoicing activity recorded this month. "
-            else:
-                explanation += f"Total invoiced: ${row['Total Invoiced']:,.2f}. "
-                if not pd.isna(total_units) and total_units > 0:
-                    per_unit = row["Total Invoiced"] / total_units
-                    explanation += f"That equals approx. ${per_unit:,.2f} per unit. "
 
             if (not gl_df_raw.empty
                 and "GL Code" in gl_df_raw.columns
@@ -166,4 +129,5 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
+
 
