@@ -16,6 +16,30 @@ with st.expander("📣 Add Context for this Month"):
     moveout_note = st.text_input("Any known spike in move-outs or turnover?")
     staffing_note = st.text_input("If payroll is under budget, is the site currently understaffed?")
 
+st.subheader("🔍 Debug Snapshot")
+
+# Show how many rows were flagged to explain
+explain_df = df_asset[df_asset["Explain"]]
+st.write(f"Rows flagged for explanation: {len(explain_df)}")
+
+# Show what GL Codes are being explained
+st.write("Flagged GL Codes:", explain_df["GL Code"].unique())
+
+# Merge BEFORE apply
+df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
+
+# Show top few rows before explanations
+st.write("🧪 Top 5 rows before generating explanations:")
+st.dataframe(df_merged.head(5))
+
+# Then apply
+df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
+
+# Show how many explanations were actually populated
+explained_count = df_merged["Explanation"].str.strip().astype(bool).sum()
+st.write(f"✅ Total rows with explanations generated: {explained_count}")
+
+
 def generate_explanation(row):
     if not row.get("Explain") or pd.isna(row.get("GL Code")):
         return ""
