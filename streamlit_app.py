@@ -28,7 +28,7 @@ with st.expander("📣 Add Context for this Month"):
 
 if uploaded_file:
     try:
-        # Load Asset Review & Chart of Accounts
+        # --- Load Asset Review & Chart of Accounts ---
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
@@ -36,7 +36,7 @@ if uploaded_file:
         st.write("✅ Asset Columns:", df_asset.columns.tolist())
         st.write("✅ Chart Columns:", df_chart.columns.tolist())
 
-        # Extract and classify GL codes in the Asset sheet
+        # --- Extract and classify GL codes in the Asset sheet ---
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r"(\d{4})")[0]
         df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
         df_asset["GL Type"] = df_asset["GL Code Num"].apply(
@@ -49,7 +49,7 @@ if uploaded_file:
             lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan
         )
 
-        # Normalize Chart of Accounts GL codes
+        # --- Normalize Chart of Accounts GL codes ---
         df_chart = df_chart.rename(columns={
             "ACCOUNT NUMBER": "GL Code",
             "ACCOUNT TITLE": "Title",
@@ -63,30 +63,32 @@ if uploaded_file:
             .str.zfill(4)
         )
 
-        # Ensure zero-padding consistency
+        # Zero-pad consistency
         df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
         df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
 
-        # Convert variance columns to numeric
+        # Convert variance columns
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        # Remove totals and blank rows
-        df_asset = df_asset[~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)]
+        # Remove totals & blanks
+        df_asset = df_asset[
+            ~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)
+        ]
         df_asset = df_asset[df_asset["Accounts"].astype(str).str.strip() != ""]
 
-        # Identify highlights (simulate Excel yellow-highlight logic)
+        # --- Highlight logic: either large $ OR large % ---
         df_asset["Highlight"] = (
             (df_asset["$ Variance"].abs() >= 2000)
-            & (df_asset["% Variance"].abs() >= 10)
+            | (df_asset["% Variance"].abs() >= 10)
         )
         df_asset["Explain"] = df_asset["Highlight"] & df_asset["GL Code"].notna()
 
-        # Filter to only those GL codes needing explanation
+        # Only keep the GL codes that need explaining
         relevant_gl_codes = df_asset.loc[df_asset["Explain"], "GL Code"].dropna().unique()
         df_asset = df_asset[df_asset["GL Code"].isin(relevant_gl_codes)]
 
-        # Load Trends file if provided to get total units
+        # --- Load Trends for total units if provided ---
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
@@ -97,7 +99,7 @@ if uploaded_file:
         else:
             total_units = np.nan
 
-        # Load and filter GL journal entries if provided
+        # --- Load GL journal entries if provided ---
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
             gl_df_raw.columns = [
@@ -120,14 +122,14 @@ if uploaded_file:
         else:
             gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description"])
 
-        # Merge chart descriptions into asset data
+        # Merge descriptions in
         df_merged = df_asset.merge(
             df_chart[["GL Code", "Description"]],
             how="left",
             on="GL Code"
         )
 
-        # Explanation generator function
+        # Explanation generator
         def generate_explanation(row):
             if not row["Explain"] or pd.isna(row["GL Code"]):
                 return ""
@@ -142,7 +144,7 @@ if uploaded_file:
             pct_var = row.get("% Variance", 0)
 
             explanation = (
-                f"GL {gl} – {desc}: This month’s actuals of "
+                f"GL {gl} – {desc}: This month's actuals of "
                 f"${actual:,.0f} vs budget ${budget:,.0f} "
                 f"({var:+,.0f}, {pct_var:+.1f}%). "
             )
@@ -176,7 +178,7 @@ if uploaded_file:
                     top_memos = memos.value_counts().head(2).index.tolist()
                     explanation += f"Top memos: {', '.join(top_memos)}. "
 
-            # Per-unit cost if we know total_units
+            # Per-unit cost
             if pd.notna(total_units) and total_units > 0 and pd.notna(actual):
                 per_unit = actual / total_units
                 explanation += f"Per-unit cost ≈ ${per_unit:,.2f}. "
@@ -193,10 +195,9 @@ if uploaded_file:
 
             return explanation.strip()
 
-        # Apply explanations
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        # Prepare final output
+        # Final output
         cols = [
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
