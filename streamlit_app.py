@@ -36,12 +36,13 @@ if uploaded_file:
         st.write("✅ Asset Columns:", df_asset.columns.tolist())
         st.write("✅ Chart Columns:", df_chart.columns.tolist())
 
-        # --- Extract and classify GL codes in the Asset sheet ---
+        # --- Extract and classify GL codes ---
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r"(\d{4})")[0]
         df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
         df_asset["GL Code"] = df_asset["GL Code Num"].apply(
             lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan
         )
+        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
 
         # --- Normalize Chart of Accounts GL codes ---
         df_chart = df_chart.rename(columns={
@@ -57,15 +58,11 @@ if uploaded_file:
             .str.zfill(4)
         )
 
-        # Ensure zero-padding consistency
-        df_asset["GL Code"] = df_asset["GL Code"].astype(str).str.zfill(4)
-        df_chart["GL Code"] = df_chart["GL Code"].astype(str).str.zfill(4)
-
-        # Convert variance columns
+        # --- Convert variance columns ---
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        # Remove totals & blank rows
+        # --- Remove totals & blanks ---
         df_asset = df_asset[
             ~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)
         ]
@@ -76,11 +73,10 @@ if uploaded_file:
             (df_asset["$ Variance"].abs() >= 2000)
             | (df_asset["% Variance"].abs() >= 10)
         )
-
-        # Only keep rows that were highlighted
+        # Keep only highlighted rows
         df_asset = df_asset[df_asset["Highlight"]]
 
-        # --- Load Trends for total units if provided ---
+        # --- Trends file for total units ---
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
@@ -91,7 +87,7 @@ if uploaded_file:
         else:
             total_units = np.nan
 
-        # --- Load GL journal entries if provided (filtered to only codes we care about) ---
+        # --- Load GL journal entries, filtered to codes in df_asset ---
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
             gl_df_raw.columns = [
@@ -104,26 +100,25 @@ if uploaded_file:
                 .str.extract(r"(\d{4})")[0]
                 .str.zfill(4)
             )
-            # only keep entries whose GL Code appears in our highlighted rows
             codes = df_asset["GL Code"].dropna().unique()
             gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(codes)]
         else:
             gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description", "Debit", "Credit"])
 
-        # Merge in Chart descriptions
+        # --- Merge with Chart descriptions ---
         df_merged = df_asset.merge(
             df_chart[["GL Code", "Description"]],
             how="left",
             on="GL Code"
         )
 
-        # Explanation generator
+        # --- Explanation generator with story and split-filtering ---
         def generate_explanation(row):
-            label = f"GL {row['GL Code']}" if pd.notna(row["GL Code"]) else row["Accounts"]
-            desc = row.get("Description")
-            if pd.isna(desc):
-                desc = row["Accounts"]
-
+            label = (
+                f"GL {row['GL Code']}"
+                if pd.notna(row["GL Code"]) else row["Accounts"]
+            )
+            desc = row.get("Description") or row["Accounts"]
             actual = row.get("Actuals", np.nan)
             budget = row.get("Budget Reporting", np.nan)
             ytd_actual = row.get("YTD Actuals", np.nan)
@@ -132,19 +127,20 @@ if uploaded_file:
             pct_var = row.get("% Variance", 0)
             direction = "unfavorable" if var < 0 else "favorable"
 
+            # Narrative intro
             explanation = (
-                f"{label} – {desc}: This month's actuals of "
-                f"${actual:,.0f} vs budget ${budget:,.0f} "
-                f"({direction} by ${abs(var):,.0f}, {abs(pct_var):.1f}%). "
+                f"This variance story for {label} – {desc} – begins with actuals of "
+                f"${actual:,.0f}, coming in {direction} of the ${budget:,.0f} budget "
+                f"by ${abs(var):,.0f} ({abs(pct_var):.1f}%). "
             )
 
             # YTD context
             if pd.notna(ytd_actual) and pd.notna(ytd_budget):
-                ytd_variance = ytd_actual - ytd_budget
-                if abs(ytd_variance) > abs(var):
-                    explanation += "YTD variance suggests a continuing trend. "
+                ytd_var = ytd_actual - ytd_budget
+                if abs(ytd_var) > abs(var):
+                    explanation += "Year-to-date variance indicates this is a continuing trend. "
                 else:
-                    explanation += "Appears to be a one-time deviation. "
+                    explanation += "However, this appears to be a one-off deviation. "
 
             # Journal entries context
             if pd.notna(row["GL Code"]) and not gl_df_raw.empty:
@@ -156,24 +152,39 @@ if uploaded_file:
                     avg_entry = entry_total / entry_count if entry_count else 0
                     max_entry = totals.max()
 
+                    explanation += (
+                        f"Collectively, {entry_count} journal postings totaled "
+                        f"${entry_total:,.0f}. "
+                    )
                     if max_entry >= 2 * avg_entry:
                         explanation += (
-                            f"Unusually large journal entry of ${max_entry:,.0f} vs avg ${avg_entry:,.0f}. "
+                            f"One entry peaked at ${max_entry:,.0f}, more than twice the "
+                            f"average ${avg_entry:,.0f}. "
                         )
                     elif entry_count > 5:
-                        explanation += f"High entry count ({entry_count}) may have contributed. "
+                        explanation += f"A higher-than-normal entry volume contributed. "
 
+                    # Memo/story filtering out Village phase splits
                     memos = entries["Memo / Description"].dropna()
-                    if not memos.empty:
-                        top_memos = memos.value_counts().head(2).index.tolist()
-                        explanation += f"Top memos: {', '.join(top_memos)}. "
+                    base_memos = (
+                        memos[~memos.str.contains("Village", case=False)]
+                        .str.replace(r"\s*-\s*Phase\s*\d+", "", regex=True)
+                        .str.strip()
+                    )
+                    counts = base_memos.value_counts()
+                    if not counts.empty:
+                        top = counts.head(2).index.tolist()
+                        explanation += f"Key invoices: {', '.join(top)}. "
+                        splits = counts[counts > 1]
+                        for inv, cnt in splits.items():
+                            explanation += f"Invoice '{inv}' was split across {cnt} phases. "
 
             # Per-unit cost
             if pd.notna(total_units) and total_units > 0 and pd.notna(actual):
                 per_unit = actual / total_units
-                explanation += f"Per-unit cost ≈ ${per_unit:,.2f}. "
+                explanation += f"That equates to about ${per_unit:,.2f} per unit. "
 
-            # Sentiment context
+            # Sentiment/context
             if row["GL Code"] in ["5205", "5210"] and staffing_note:
                 explanation += f"Staffing note: {staffing_note}. "
             if row["GL Code"] in ["5601", "5671"] and moveout_note:
@@ -181,13 +192,13 @@ if uploaded_file:
             if delay_note:
                 explanation += f"Billing delay note: {delay_note}. "
             if major_event:
-                explanation += f"Event context: {major_event}. "
+                explanation += f"Event note: {major_event}. "
 
             return explanation.strip()
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        # Show everything we merged
+        # --- Output ---
         cols = [
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
