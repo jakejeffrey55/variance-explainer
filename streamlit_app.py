@@ -2,27 +2,26 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# App Setup
+# Streamlit app setup
 st.set_page_config(page_title="Variance Explanation Generator", layout="wide")
 st.title("📊 Cortland Asset Variance Explainer")
 
-# File Uploads
+# Uploads
 uploaded_file = st.file_uploader("Upload Asset Review file", type=["xlsx"])
 trends_file = st.file_uploader("Upload Trends file (Unit Mix)", type=["xlsx"])
 gl_file = st.file_uploader("Upload General Ledger file", type=["xlsx"])
 
-# Contextual Notes
+# Context for sentiment
 with st.expander("📣 Add Monthly Context"):
     major_event = st.text_input("Major event this month?")
     delay_note = st.text_input("Any billing delays or credits?")
     moveout_note = st.text_input("Spike in move-outs?")
     staffing_note = st.text_input("If payroll is under budget, is the site understaffed?")
 
-# Initialize global variables
+# Globals
 gl_df_raw = pd.DataFrame()
 total_units = np.nan
 
-# Explanation Function
 def generate_explanation(row):
     global gl_df_raw, total_units, major_event, delay_note, moveout_note, staffing_note
 
@@ -48,7 +47,6 @@ def generate_explanation(row):
         else:
             explanation += "- This appears to be an isolated variance.\n"
 
-    # GL entry review
     if not gl_df_raw.empty and gl in gl_df_raw["GL Code"].values:
         entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
         entry_count = len(entries)
@@ -80,59 +78,50 @@ def generate_explanation(row):
 
     return explanation.strip()
 
-# Main logic
+# Main process
 if uploaded_file:
     try:
-        # Read files
+        # Load files
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
 
-        # Extract GL codes
+        # Convert GL Codes
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r'(\d{4})')[0]
         df_asset["GL Code Num"] = pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
         df_asset["GL Code"] = df_asset["GL Code Num"].apply(lambda x: str(int(x)).zfill(4) if pd.notna(x) else np.nan)
 
-        # Parse GL chart
-        df_chart = df_chart.rename(columns={
-            'ACCOUNT NUMBER': 'GL Code',
-            'ACCOUNT TITLE': 'Title',
-            'ACCOUNT DESCRIPTION': 'Description'
-        })
-        df_chart["GL Code"] = pd.to_numeric(df_chart["GL Code"], errors="coerce").dropna().astype(int).astype(str).str.zfill(4)
-
-        # Fix variance types
+        # Convert variances
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        # Clean data
-        df_asset = df_asset[~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)]
-        df_asset = df_asset[df_asset["Accounts"].astype(str).str.strip() != ""]
-
-        # Flag rows needing explanation
-        df_asset["Highlight"] = (
-            (df_asset["$ Variance"].abs() >= 2000) & (df_asset["% Variance"].abs() >= 10)
-        )
-        df_asset["Explain"] = df_asset["Highlight"] & df_asset["GL Code"].notna()
-
-        # Ensure YTD columns exist
+        # Add YTD columns if missing
         for col in ["YTD Actuals", "YTD Budget"]:
             if col not in df_asset.columns:
                 df_asset[col] = np.nan
 
-        # Show diagnostics
-        explain_df = df_asset[df_asset["Explain"]]
-        st.subheader("🔍 Debug Info")
-        st.write(f"Rows marked for explanation: {len(explain_df)}")
-        st.dataframe(explain_df[["GL Code", "$ Variance", "% Variance"]])
+        # Excel-style filter logic
+        df_asset["Highlight"] = (
+            (df_asset["$ Variance"].abs() >= 2000) &
+            (df_asset["% Variance"].abs() >= 10) &
+            (~df_asset["Accounts"].astype(str).str.startswith((
+                "Total", "Net", "Income", "4011", "4012", "6", "7", "8999"
+            )))
+        )
+        df_asset["Explain"] = df_asset["Highlight"] & df_asset["GL Code"].notna()
 
-        # Pull unit mix (total units)
+        # Debug
+        st.subheader("🔍 Explanation Candidates")
+        st.write(f"Rows flagged for explanation: {df_asset['Explain'].sum()}")
+        st.dataframe(df_asset[df_asset["Explain"]][["Accounts", "$ Variance", "% Variance", "GL Code"]])
+
+        # Trends (unit mix)
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
             total_units = pd.to_numeric(unitmix_df[unitmix_df.columns[1]].dropna().iloc[-1], errors='coerce')
 
-        # Read GL
+        # Load GL if present
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
             gl_df_raw.columns = [
@@ -140,23 +129,28 @@ if uploaded_file:
                 "Memo / Description", "Unused2", "Journal", "Unused3", "Debit", "Credit"
             ] + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = gl_df_raw["GL Code"].astype(str).str.extract(r'(\d{4})')[0].str.zfill(4)
-            relevant_codes = df_asset[df_asset["Explain"]]["GL Code"].dropna().unique()
-            gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(relevant_codes)]
-
+            gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(df_asset["GL Code"].dropna().unique())]
         else:
             gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description"])
 
-        # Merge and generate explanations
+        # Merge and explain
+        df_chart = df_chart.rename(columns={
+            'ACCOUNT NUMBER': 'GL Code',
+            'ACCOUNT TITLE': 'Title',
+            'ACCOUNT DESCRIPTION': 'Description'
+        })
+        df_chart["GL Code"] = pd.to_numeric(df_chart["GL Code"], errors="coerce").dropna().astype(int).astype(str).str.zfill(4)
+
         df_merged = df_asset.merge(df_chart[["GL Code", "Description"]], how="left", on="GL Code")
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        st.write("✅ Total explanations generated:", df_merged["Explanation"].str.strip().astype(bool).sum())
-
+        # Display
         output_df = df_merged[df_merged["Explanation"].str.strip() != ""][[
             "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
             "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
         ]]
 
+        st.subheader("📄 Generated Explanations")
         st.dataframe(output_df.style.set_properties(**{'white-space': 'pre-wrap'}), use_container_width=True)
 
         csv = output_df.to_csv(index=False).encode("utf-8")
