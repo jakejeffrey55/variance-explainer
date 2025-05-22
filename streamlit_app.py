@@ -27,33 +27,21 @@ with st.expander("📣 Add Context for this Month"):
 
 if uploaded_file:
     try:
+        # --- Load Asset Review & Chart of Accounts ---
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
 
+        # Extract GL codes
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r"(\d{4})")[0]
         df_asset["GL Code"] = (
             pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
-            .dropna()
-            .astype(int)
-            .astype(str)
-            .str.zfill(4)
+            .dropna().astype(int).astype(str).str.zfill(4)
         )
-        df_chart = df_chart.rename(columns={
-            "ACCOUNT NUMBER": "GL Code",
-            "ACCOUNT TITLE": "Title",
-            "ACCOUNT DESCRIPTION": "Description",
-        })
-        df_chart["GL Code"] = (
-            pd.to_numeric(df_chart["GL Code"], errors="coerce")
-            .dropna()
-            .astype(int)
-            .astype(str)
-            .str.zfill(4)
-        )
-
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
+
+        # Clean up
         df_asset = df_asset[
             ~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)
         ]
@@ -64,128 +52,114 @@ if uploaded_file:
         )
         df_asset = df_asset[df_asset["Highlight"]]
 
+        # Trends for per-unit
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
             total_units = pd.to_numeric(
-                unitmix_df[unitmix_df.columns[1]].dropna().iloc[-1],
-                errors="coerce"
+                unitmix_df[unitmix_df.columns[1]].dropna().iloc[-1], errors="coerce"
             )
         else:
             total_units = np.nan
 
+        # Load relevant GL entries
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
-            gl_df_raw.columns = [
-                "GL Code", "GL Name", "Post Date", "Effective Date", "Unused1",
-                "Account Name", "Memo / Description", "Unused2", "Journal",
-                "Unused3", "Debit", "Credit"
-            ] + list(gl_df_raw.columns[12:])
+            cols = [
+                "GL Code","GL Name","Post Date","Effective Date","Unused1",
+                "Account Name","Memo / Description","Unused2","Journal",
+                "Unused3","Debit","Credit"
+            ]
+            gl_df_raw.columns = cols + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = (
                 gl_df_raw["GL Code"].astype(str)
-                .str.extract(r"(\d{4})")[0]
-                .str.zfill(4)
+                .str.extract(r"(\d{4})")[0].str.zfill(4)
             )
             codes = df_asset["GL Code"].dropna().unique()
             gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(codes)]
         else:
-            gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description", "Debit", "Credit"])
+            gl_df_raw = pd.DataFrame(columns=["GL Code","Memo / Description","Debit","Credit"])
 
-        df_merged = df_asset.merge(
-            df_chart[["GL Code", "Description"]],
-            how="left",
-            on="GL Code"
-        )
+        # Merge back just for indexing; we won't echo descriptions
+        df_merged = df_asset[[
+            "GL Code","Accounts","Actuals","Budget Reporting",
+            "$ Variance","% Variance","YTD Actuals","YTD Budget"
+        ]].copy()
 
         def generate_explanation(row):
             gl = row["GL Code"]
-            # coerce description to string
-            raw_desc = row.get("Description")
-            if pd.isna(raw_desc):
-                desc = row["Accounts"]
-            else:
-                desc = raw_desc
-            desc = str(desc)
-            desc_low = desc.lower()
-
             actual = row.get("Actuals", np.nan)
             budget = row.get("Budget Reporting", np.nan)
-            ytd_actual = row.get("YTD Actuals", np.nan)
-            ytd_budget = row.get("YTD Budget", np.nan)
             var = row.get("$ Variance", 0)
-            pct_var = row.get("% Variance", 0)
-            direction = "below" if var < 0 else "above"
+            pct = row.get("% Variance", 0)
+            direction = "under" if var < 0 else "over"
 
-            explanation = (
-                f"GL {gl} covers **{desc}**, an account that tracks {desc_low}. "
-                f"This month’s actuals of ${actual:,.0f} came in {direction} "
-                f"the ${budget:,.0f} budget by ${abs(var):,.0f} ({abs(pct_var):.1f}%). "
+            # Start with the core variance
+            expl = (
+                f"GL {gl}: actuals of ${actual:,.0f} came in {direction} budget "
+                f"(${budget:,.0f}) by ${abs(var):,.0f} ({abs(pct):.1f}%). "
             )
 
-            if pd.notna(ytd_actual) and pd.notna(ytd_budget):
-                ytd_var = ytd_actual - ytd_budget
-                trend = "continuing" if abs(ytd_var) > abs(var) else "one-off"
-                explanation += (
-                    f"The YTD variance of ${ytd_var:,.0f} suggests a {trend} trend. "
+            # YTD
+            ytd_act = row.get("YTD Actuals", np.nan)
+            ytd_bud = row.get("YTD Budget", np.nan)
+            if pd.notna(ytd_act) and pd.notna(ytd_bud):
+                ytdv = ytd_act - ytd_bud
+                expl += (
+                    f"YTD variance ${ytdv:,.0f} shows "
+                    f"{'continuation' if abs(ytdv) > abs(var) else 'a one-off'} trend. "
                 )
 
-            if gl and not gl_df_raw.empty:
+            # Invoice reversals
+            if not gl_df_raw.empty:
                 entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
-                if not entries.empty:
-                    entry_count = len(entries)
-                    totals = entries[["Debit", "Credit"]].fillna(0).sum(axis=1)
-                    tot_sum = totals.sum()
-                    avg_e = tot_sum / entry_count if entry_count else 0
-                    max_e = totals.max()
+                revs = entries[
+                    entries["Memo / Description"]
+                    .str.contains("reverse|reversal", case=False, na=False)
+                ]
+                if not revs.empty:
+                    count = len(revs)
+                    expl += f"{count} reversal entr{'y' if count==1 else 'ies'} detected. "
 
-                    explanation += (
-                        f"A total of {entry_count} postings summed to ${tot_sum:,.0f}. "
-                    )
-                    if max_e >= 2 * avg_e:
-                        explanation += (
-                            f"One large posting of ${max_e:,.0f} (vs avg ${avg_e:,.0f}) drove much of it. "
+                # Large or frequent invoices
+                totals = entries[["Debit","Credit"]].fillna(0).sum(axis=1)
+                if not totals.empty:
+                    entry_count = len(totals)
+                    sum_tot = totals.sum()
+                    avg = sum_tot / entry_count
+                    mx = totals.max()
+                    if mx > avg * 1.5:
+                        expl += (
+                            f"An invoice of ${mx:,.0f} exceeded the average "
+                            f"${avg:,.0f}, driving variance. "
                         )
-                    elif entry_count > 5:
-                        explanation += "Elevated entry volume also played a role. "
+                    elif entry_count > 3:
+                        expl += f"{entry_count} postings this month contributed. "
 
-                    memos = entries["Memo / Description"].dropna()
-                    core = (
-                        memos[~memos.str.contains("Village", case=False)]
-                        .str.replace(r"\s*-\s*Phase\s*\d+", "", regex=True)
-                        .str.strip()
-                    )
-                    top = core.value_counts().head(2).index.tolist()
-                    if top:
-                        explanation += f"Key invoices: {', '.join(top)}. "
-
-            if pd.notna(total_units) and total_units > 0 and pd.notna(actual):
+            # Per-unit framing
+            if pd.notna(total_units) and total_units > 0:
                 per_u = actual / total_units
-                explanation += f"That’s about ${per_u:,.2f} per unit. "
+                expl += f"Equates to ${per_u:,.2f} per unit. "
 
-            if desc_low.find("salary") != -1 and staffing_note:
-                explanation += f"Staffing note: {staffing_note}. "
-            if moveout_note and any(k in desc_low for k in ["turnover", "move-out"]):
-                explanation += f"Move-out context: {moveout_note}. "
+            # Context notes
             if delay_note:
-                explanation += f"Billing delay note: {delay_note}. "
+                expl += f"Billing delays: {delay_note}. "
             if major_event:
-                explanation += f"Event context: {major_event}. "
+                expl += f"Event: {major_event}. "
+            if moveout_note:
+                expl += f"Turnover spike: {moveout_note}. "
+            if staffing_note and pct < 0:
+                expl += f"Staffing note: {staffing_note}. "
 
-            return explanation.strip()
+            return expl.strip()
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
-        cols = [
-            "GL Code", "Accounts", "Actuals", "Budget Reporting", "$ Variance",
-            "% Variance", "YTD Actuals", "YTD Budget", "Explanation"
-        ]
-        output_df = df_merged[[c for c in cols if c in df_merged.columns]]
-
         st.success("Explanation generation complete ✅")
-        st.dataframe(output_df, use_container_width=True)
+        st.dataframe(df_merged, use_container_width=True)
         st.download_button(
             "⬇️ Download Results as CSV",
-            data=output_df.to_csv(index=False).encode("utf-8"),
+            data=df_merged.to_csv(index=False).encode("utf-8"),
             file_name="variance_explanations.csv"
         )
 
