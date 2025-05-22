@@ -27,32 +27,36 @@ with st.expander("📣 Add Context for this Month"):
 
 if uploaded_file:
     try:
-        # --- Load Asset Review & Chart of Accounts ---
+        # --- Load and clean Asset Review & Chart of Accounts ---
         xls = pd.ExcelFile(uploaded_file)
         df_asset = pd.read_excel(xls, sheet_name="Asset Review", skiprows=5)
         df_chart = pd.read_excel(xls, sheet_name="Chart of Accounts")
 
-        # Extract GL codes
+        # Extract GL Code
         df_asset["GL Code Raw"] = df_asset["Accounts"].astype(str).str.extract(r"(\d{4})")[0]
         df_asset["GL Code"] = (
             pd.to_numeric(df_asset["GL Code Raw"], errors="coerce")
             .dropna().astype(int).astype(str).str.zfill(4)
         )
+
+        # Variance columns to numeric
         df_asset["$ Variance"] = pd.to_numeric(df_asset["$ Variance"], errors="coerce")
         df_asset["% Variance"] = pd.to_numeric(df_asset["% Variance"], errors="coerce")
 
-        # Clean up
+        # Filter out totals/blanks
         df_asset = df_asset[
             ~df_asset["Accounts"].astype(str).str.contains("(?i)total", na=False)
         ]
         df_asset = df_asset[df_asset["Accounts"].astype(str).str.strip() != ""]
+
+        # Highlight logic
         df_asset["Highlight"] = (
             (df_asset["$ Variance"].abs() >= 2000)
             | (df_asset["% Variance"].abs() >= 10)
         )
         df_asset = df_asset[df_asset["Highlight"]]
 
-        # Trends for per-unit
+        # Trends for per-unit cost
         if trends_file:
             t_xls = pd.ExcelFile(trends_file)
             unitmix_df = pd.read_excel(t_xls, sheet_name="Unit Mix")
@@ -62,13 +66,13 @@ if uploaded_file:
         else:
             total_units = np.nan
 
-        # Load relevant GL entries
+        # Load GL journal entries
         if gl_file:
             gl_df_raw = pd.read_excel(gl_file, skiprows=8, header=None)
             cols = [
-                "GL Code","GL Name","Post Date","Effective Date","Unused1",
-                "Account Name","Memo / Description","Unused2","Journal",
-                "Unused3","Debit","Credit"
+                "GL Code", "GL Name", "Post Date", "Effective Date", "Unused1",
+                "Account Name", "Memo / Description", "Unused2", "Journal",
+                "Unused3", "Debit", "Credit"
             ]
             gl_df_raw.columns = cols + list(gl_df_raw.columns[12:])
             gl_df_raw["GL Code"] = (
@@ -78,68 +82,62 @@ if uploaded_file:
             codes = df_asset["GL Code"].dropna().unique()
             gl_df_raw = gl_df_raw[gl_df_raw["GL Code"].isin(codes)]
         else:
-            gl_df_raw = pd.DataFrame(columns=["GL Code","Memo / Description","Debit","Credit"])
+            gl_df_raw = pd.DataFrame(columns=["GL Code", "Memo / Description", "Debit", "Credit"])
 
-        # Merge back just for indexing; we won't echo descriptions
-        df_merged = df_asset[[
-            "GL Code","Accounts","Actuals","Budget Reporting",
-            "$ Variance","% Variance","YTD Actuals","YTD Budget"
-        ]].copy()
+        # Build merged df with only columns that exist
+        desired_cols = [
+            "GL Code", "Accounts", "Actuals", "Budget Reporting",
+            "$ Variance", "% Variance", "YTD Actuals", "YTD Budget"
+        ]
+        keep = [c for c in desired_cols if c in df_asset.columns]
+        df_merged = df_asset[keep].copy()
 
+        # Explanation logic
         def generate_explanation(row):
-            gl = row["GL Code"]
-            actual = row.get("Actuals", np.nan)
-            budget = row.get("Budget Reporting", np.nan)
+            gl = row.get("GL Code", "Unknown")
+            actual = row.get("Actuals", 0)
+            budget = row.get("Budget Reporting", 0)
             var = row.get("$ Variance", 0)
             pct = row.get("% Variance", 0)
             direction = "under" if var < 0 else "over"
 
-            # Start with the core variance
             expl = (
-                f"GL {gl}: actuals of ${actual:,.0f} came in {direction} budget "
+                f"GL {gl}: actuals ${actual:,.0f} {direction} budget "
                 f"(${budget:,.0f}) by ${abs(var):,.0f} ({abs(pct):.1f}%). "
             )
 
-            # YTD
-            ytd_act = row.get("YTD Actuals", np.nan)
-            ytd_bud = row.get("YTD Budget", np.nan)
+            # YTD if available
+            ytd_act = row.get("YTD Actuals")
+            ytd_bud = row.get("YTD Budget")
             if pd.notna(ytd_act) and pd.notna(ytd_bud):
                 ytdv = ytd_act - ytd_bud
-                expl += (
-                    f"YTD variance ${ytdv:,.0f} shows "
-                    f"{'continuation' if abs(ytdv) > abs(var) else 'a one-off'} trend. "
-                )
+                trend = "continuation" if abs(ytdv) > abs(var) else "one-off"
+                expl += f"YTD variance ${ytdv:,.0f} shows {trend} trend. "
 
-            # Invoice reversals
+            # Reversals & large invoices
             if not gl_df_raw.empty:
                 entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
                 revs = entries[
                     entries["Memo / Description"]
                     .str.contains("reverse|reversal", case=False, na=False)
                 ]
-                if not revs.empty:
-                    count = len(revs)
-                    expl += f"{count} reversal entr{'y' if count==1 else 'ies'} detected. "
+                if len(revs):
+                    expl += f"{len(revs)} reversal entr{'y' if len(revs)==1 else 'ies'}. "
 
-                # Large or frequent invoices
                 totals = entries[["Debit","Credit"]].fillna(0).sum(axis=1)
-                if not totals.empty:
-                    entry_count = len(totals)
-                    sum_tot = totals.sum()
-                    avg = sum_tot / entry_count
+                if len(totals):
+                    avg = totals.mean()
                     mx = totals.max()
                     if mx > avg * 1.5:
                         expl += (
-                            f"An invoice of ${mx:,.0f} exceeded the average "
-                            f"${avg:,.0f}, driving variance. "
+                            f"One invoice of ${mx:,.0f} exceeded avg ${avg:,.0f}. "
                         )
-                    elif entry_count > 3:
-                        expl += f"{entry_count} postings this month contributed. "
+                    elif len(totals) > 3:
+                        expl += f"{len(totals)} postings contributed. "
 
-            # Per-unit framing
+            # Per-unit
             if pd.notna(total_units) and total_units > 0:
-                per_u = actual / total_units
-                expl += f"Equates to ${per_u:,.2f} per unit. "
+                expl += f"≈${actual/total_units:,.2f} per unit. "
 
             # Context notes
             if delay_note:
@@ -148,7 +146,7 @@ if uploaded_file:
                 expl += f"Event: {major_event}. "
             if moveout_note:
                 expl += f"Turnover spike: {moveout_note}. "
-            if staffing_note and pct < 0:
+            if staffing_note and var < 0:
                 expl += f"Staffing note: {staffing_note}. "
 
             return expl.strip()
