@@ -111,69 +111,90 @@ if uploaded_file:
             var = row["$ Variance"]
             pct = row["% Variance"]
             direction = "under" if var < 0 else "over"
-            expl = (
-                f"GL {gl}: actuals ${actual:,.0f} {direction} budget "
-                f"(${budget:,.0f}) by ${abs(var):,.0f} ({abs(pct):.1f}%). "
+            expl_parts = []
+
+            expl_parts.append(
+                f"**GL {gl}:** Actuals were ${actual:,.0f}, {direction} budget "
+                f"(${budget:,.0f}) by ${abs(var):,.0f} ({abs(pct):.1f}%)."
             )
 
             # YTD if present
             if "YTD Actuals" in row and "YTD Budget" in row and pd.notna(row["YTD Actuals"]):
                 ytdv = row["YTD Actuals"] - row["YTD Budget"]
                 trend = "continuing" if abs(ytdv) > abs(var) else "one-off"
-                expl += f"YTD ${ytdv:,.0f} shows {trend} trend. "
+                expl_parts.append(f"  * **YTD Trend:** The YTD variance is ${ytdv:,.0f}, indicating a {trend} trend.")
 
             desc = str(row.get("Description","")).lower()
 
             # Application Fees story
             if "application" in desc and leasing_apps is not None:
                 diff = leasing_apps - (prev_leasing_apps or leasing_apps)
-                expl += (
-                    f"We processed {leasing_apps} applications this period "
-                    f"({diff:+} from prior), impacting application fee revenue. "
+                # Example: Assume average application fee is $50
+                estimated_impact = diff * 50
+                expl_parts.append(
+                    f"  * **Leasing Activity:**  {leasing_apps} applications were processed this period "
+                    f"({diff:+} from prior period). This change in applications is estimated to have impacted revenue by approximately ${estimated_impact:+.0f}."
                 )
 
             # Make-Ready costs story
             if "make ready" in desc and moveouts_cur is not None:
                 diff_mo = moveouts_cur - (prev_moveouts or moveouts_cur)
-                expl += (
-                    f"Move-outs were {moveouts_cur} ({diff_mo:+}), "
-                    f"driving increased make-ready spend. "
+                # Example: Assume average make-ready cost is $1000
+                estimated_impact = diff_mo * 1000
+                expl_parts.append(
+                    f"  * **Move-Outs:** There were {moveouts_cur} move-outs this period ({diff_mo:+}). "
+                    f"This fluctuation in move-outs is estimated to have affected make-ready expenses by around ${estimated_impact:+.0f}."
                 )
 
-            # Reversals & invoice‐size
+            # GL Entry Analysis
             entries = gl_df_raw[gl_df_raw["GL Code"] == gl]
             if not entries.empty:
-                revs = entries["Memo / Description"].str.contains(
-                    "reverse|reversal", case=False, na=False
-                ).sum()
+                # Categorize entries (example categories - adjust to your data)
+                entry_categories = {
+                    "repairs": entries[entries["Memo / Description"].str.contains("repair|maintenance", case=False, na=False)],
+                    "marketing": entries[entries["Memo / Description"].str.contains("market|advertise", case=False, na=False)],
+                    "utilities": entries[entries["Memo / Description"].str.contains("utility|electric|gas|water", case=False, na=False)],
+                    "other": entries[~entries["Memo / Description"].str.contains("repair|maintenance|market|advertise|utility|electric|gas|water", case=False, na=False)]
+                }
+                gl_insights = []
+                for category, cat_entries in entry_categories.items():
+                    if not cat_entries.empty:
+                        total_amount = (cat_entries["Debit"].fillna(0) - cat_entries["Credit"].fillna(0)).sum()
+                        gl_insights.append(f"  * **GL Details:** Category '{category}' had a net impact of ${total_amount:,.0f} due to {len(cat_entries)} entries.")
+                if gl_insights:
+                    expl_parts.extend(gl_insights)
+
+                # Reversals & invoice‐size (simplified for brevity, can be expanded)
+                revs = entries["Memo / Description"].str.contains("reverse|reversal", case=False, na=False).sum()
                 if revs:
-                    expl += f"{revs} reversal entr{'y' if revs==1 else 'ies'}. "
+                    expl_parts.append(f"  * **Reversals:** There were {revs} reversal entries.")
                 totals = entries[["Debit","Credit"]].fillna(0).sum(axis=1)
                 if not totals.empty:
                     avg = totals.mean()
                     mx = totals.max()
                     if mx > avg * 1.5:
-                        expl += (
-                            f"One invoice of ${mx:,.0f} exceeded avg ${avg:,.0f}. "
-                        )
+                        expl_parts.append(f"  * **Large Invoice:** One invoice of ${mx:,.0f} significantly exceeded the average posting of ${avg:,.0f}.")
                     elif len(totals) > 3:
-                        expl += f"{len(totals)} postings contributed. "
+                        expl_parts.append(f"  * **Numerous Postings:** {len(totals)} postings contributed to this variance.")
 
             # Per-unit
             if pd.notna(total_units) and total_units > 0:
-                expl += f"≈${actual/total_units:,.2f} per unit. "
+                expl_parts.append(f"  * **Per Unit:** This represents approximately ${actual/total_units:,.2f} per unit.")
 
             # Context
+            context_items = []
             if delay_note:
-                expl += f"Billing delays: {delay_note}. "
+                context_items.append(f"Billing delays: {delay_note}")
             if major_event:
-                expl += f"Event: {major_event}. "
+                context_items.append(f"Major event: {major_event}")
             if moveout_note:
-                expl += f"Turnover spike: {moveout_note}. "
+                context_items.append(f"Turnover spike: {moveout_note}")
             if staffing_note and var < 0:
-                expl += f"Staffing note: {staffing_note}. "
+                context_items.append(f"Staffing note: {staffing_note}")
+            if context_items:
+                expl_parts.append("  * **Additional Context:** " + ". ".join(context_items) + ".")
 
-            return expl.strip()
+            return "\n".join(expl_parts).strip()
 
         df_merged["Explanation"] = df_merged.apply(generate_explanation, axis=1)
 
@@ -187,3 +208,4 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
+
