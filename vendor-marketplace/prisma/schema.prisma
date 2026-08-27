@@ -1,0 +1,812 @@
+// Vendor Marketplace — Prisma schema
+// Property management make-ready + general contracting job marketplace.
+// Integrations (OneSite, Coupa, Vendorply, Power BI) are represented as
+// provider-agnostic records: nothing in this schema names a vendor system,
+// only `providerKey` + `externalId` so adapters can be swapped without migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum AdminRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+enum ComplianceStatus {
+  COMPLIANT
+  EXPIRING_SOON
+  EXPIRED
+  NOT_SUBMITTED
+}
+
+enum ServiceCategory {
+  MAKE_READY
+  GENERAL_CONTRACTING
+  PLUMBING
+  ELECTRICAL
+  HVAC
+  FLOORING
+  PAINTING
+  DRYWALL
+  APPLIANCE
+  CLEANING
+  LANDSCAPING
+  ROOFING
+  PEST_CONTROL
+  WATER_MITIGATION
+  OTHER
+}
+
+enum JobStatus {
+  DRAFT
+  OPEN
+  BIDDING_CLOSED
+  AWAITING_APPROVAL
+  AWARDED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum JobPriority {
+  STANDARD
+  EMERGENCY
+}
+
+enum EmergencyCategory {
+  AC_HVAC
+  LEAK
+  WATER_EXTRACTION
+  ELECTRICAL
+  OTHER
+}
+
+enum BidStatus {
+  SUBMITTED
+  WITHDRAWN
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum RequisitionStatus {
+  PENDING
+  SUBMITTED
+  ACKNOWLEDGED
+  FAILED
+}
+
+enum ContractStatus {
+  NOT_REQUIRED
+  DRAFT
+  PENDING_SIGNATURE
+  SIGNED
+  VOID
+}
+
+enum ApprovalFlagType {
+  ABOVE_AVERAGE_THRESHOLD
+  ABOVE_BUDGET_CAP
+}
+
+enum PropertySource {
+  CSV
+  POWER_BI
+  ONESITE
+  MANUAL
+}
+
+enum ImportKind {
+  PROPERTY
+  VENDOR
+  RENT_ROLL
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum AvailabilityType {
+  BLACKOUT
+  REDUCED_CAPACITY
+}
+
+enum ActorType {
+  ADMIN
+  VENDOR
+  SYSTEM
+}
+
+enum ActivityEntityType {
+  JOB
+  BID
+  CONTRACT
+  REQUISITION
+  VENDOR
+  PROPERTY
+  RATING
+  APPROVAL_FLAG
+}
+
+enum NotificationChannel {
+  SMS
+  PUSH
+  EMAIL
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+}
+
+enum DocumentType {
+  COI
+  W9
+  LICENSE
+  CONTRACT
+  PHOTO_BEFORE
+  PHOTO_AFTER
+  INVOICE
+  SCOPE_OF_WORK
+  OTHER
+}
+
+// ---------------------------------------------------------------------------
+// Identity — two fully separate credential spaces.
+// There is no shared users table: an admin credential can never resolve to a
+// vendor session and vice versa. Sessions carry a scope ("admin" | "vendor")
+// derived from which table authenticated.
+// ---------------------------------------------------------------------------
+
+model AdminUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  name         String
+  phone        String?
+  role         AdminRole @default(STAFF)
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  createdJobs       Job[]              @relation("JobCreatedBy")
+  approvedBids      Bid[]              @relation("BidApprovedBy")
+  approvedVendors   Vendor[]           @relation("VendorApprovedBy")
+  ratings           JobRating[]
+  acknowledgedFlags ApprovalFlag[]     @relation("FlagAcknowledgedBy")
+  chatMessages      ChatMessage[]      @relation("ChatMessageAdminSender")
+  activityLogs      ActivityLog[]      @relation("ActivityAdminActor")
+  importBatches     ImportBatch[]
+  pushSubscriptions PushSubscription[]
+  settingsUpdates   ApprovalSettings[] @relation("SettingsUpdatedBy")
+  jobInvitations    JobInvitation[]    @relation("InvitationInvitedBy")
+  notifications     NotificationLog[]  @relation("NotificationAdminRecipient")
+
+  @@map("admin_users")
+}
+
+model VendorUser {
+  id           String    @id @default(cuid())
+  vendorId     String    @map("vendor_id")
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  name         String
+  phone        String?
+  isPrimary    Boolean   @default(false) @map("is_primary")
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  vendor            Vendor             @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  chatMessages      ChatMessage[]      @relation("ChatMessageVendorSender")
+  pushSubscriptions PushSubscription[]
+
+  @@index([vendorId])
+  @@map("vendor_users")
+}
+
+// ---------------------------------------------------------------------------
+// Properties (imported via PropertySyncProvider: CSV today, Power BI / OneSite later)
+// ---------------------------------------------------------------------------
+
+model Property {
+  id                   String         @id @default(cuid())
+  externalId           String?        @map("external_id")
+  source               PropertySource @default(CSV)
+  sourceBatchId        String?        @map("source_batch_id")
+  name                 String
+  addressLine1         String         @map("address_line1")
+  addressLine2         String?        @map("address_line2")
+  city                 String
+  state                String
+  postalCode           String         @map("postal_code")
+  latitude             Float
+  longitude            Float
+  unitCount            Int?           @map("unit_count")
+  propertyManagerName  String?        @map("property_manager_name")
+  propertyManagerEmail String?        @map("property_manager_email")
+  propertyManagerPhone String?        @map("property_manager_phone")
+  isActive             Boolean        @default(true) @map("is_active")
+  lastSyncedAt         DateTime?      @map("last_synced_at")
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+
+  jobs          Job[]
+  rentRolls     RentRoll[]
+  approvalFlags ApprovalFlag[]
+
+  @@unique([source, externalId], name: "property_source_external_id")
+  @@index([isActive])
+  @@map("properties")
+}
+
+model RentRoll {
+  id            String    @id @default(cuid())
+  propertyId    String    @map("property_id")
+  importBatchId String?   @map("import_batch_id")
+  unitNumber    String    @map("unit_number")
+  unitType      String?   @map("unit_type")
+  squareFeet    Int?      @map("square_feet")
+  marketRent    Decimal?  @map("market_rent") @db.Decimal(12, 2)
+  currentRent   Decimal?  @map("current_rent") @db.Decimal(12, 2)
+  status        String?
+  leaseEndDate  DateTime? @map("lease_end_date")
+  moveOutDate   DateTime? @map("move_out_date")
+  moveInDate    DateTime? @map("move_in_date")
+  importedAt    DateTime  @default(now()) @map("imported_at")
+
+  property    Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  @@unique([propertyId, unitNumber])
+  @@index([moveOutDate])
+  @@map("rent_rolls")
+}
+
+model ImportBatch {
+  id           String       @id @default(cuid())
+  kind         ImportKind
+  providerKey  String       @map("provider_key")
+  status       ImportStatus @default(PENDING)
+  fileName     String?      @map("file_name")
+  rowsTotal    Int          @default(0) @map("rows_total")
+  rowsImported Int          @default(0) @map("rows_imported")
+  rowsSkipped  Int          @default(0) @map("rows_skipped")
+  rowsFailed   Int          @default(0) @map("rows_failed")
+  errors       Json?
+  adminUserId  String?      @map("admin_user_id")
+  startedAt    DateTime     @default(now()) @map("started_at")
+  finishedAt   DateTime?    @map("finished_at")
+
+  adminUser AdminUser? @relation(fields: [adminUserId], references: [id])
+  rentRolls RentRoll[]
+
+  @@index([kind, startedAt])
+  @@map("import_batches")
+}
+
+// ---------------------------------------------------------------------------
+// Vendors
+// ---------------------------------------------------------------------------
+
+model Vendor {
+  id                 String            @id @default(cuid())
+  companyName        String            @map("company_name")
+  contactName        String            @map("contact_name")
+  email              String            @unique
+  phone              String
+  smsOptIn           Boolean           @default(true) @map("sms_opt_in")
+  addressLine1       String?           @map("address_line1")
+  city               String?
+  state              String?
+  postalCode         String?           @map("postal_code")
+  latitude           Float
+  longitude          Float
+  serviceRadiusMiles Int               @default(25) @map("service_radius_miles")
+  serviceCategories  ServiceCategory[] @map("service_categories")
+
+  // Onboarding / access gates — all enforced server-side, never UI-only.
+  accountStatus     AccountStatus    @default(PENDING) @map("account_status")
+  emergencyEligible Boolean          @default(false) @map("emergency_eligible")
+  complianceStatus  ComplianceStatus @default(NOT_SUBMITTED) @map("compliance_status")
+
+  // Credentialing (Vendorply today via VendorSyncProvider CSV)
+  vendorplyId          String?   @map("vendorply_id")
+  complianceExpiresAt  DateTime? @map("compliance_expires_at")
+  insuranceExpiresAt   DateTime? @map("insurance_expires_at")
+  licenseNumber        String?   @map("license_number")
+  w9OnFile             Boolean   @default(false) @map("w9_on_file")
+  lastCredentialSyncAt DateTime? @map("last_credential_sync_at")
+
+  // ReviewProvider (Google Places)
+  googlePlaceId         String?   @map("google_place_id")
+  googleRating          Float?    @map("google_rating")
+  googleRatingCount     Int?      @map("google_rating_count")
+  googleRatingFetchedAt DateTime? @map("google_rating_fetched_at")
+
+  yearsInBusiness   Int?      @map("years_in_business")
+  trustScore        Float?    @map("trust_score")
+  trustScoreAt      DateTime? @map("trust_score_at")
+  approvedAt        DateTime? @map("approved_at")
+  approvedByAdminId String?   @map("approved_by_admin_id")
+  rejectionReason   String?   @map("rejection_reason")
+  internalNotes     String?   @map("internal_notes")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  approvedBy AdminUser? @relation("VendorApprovedBy", fields: [approvedByAdminId], references: [id])
+
+  users         VendorUser[]
+  bids          Bid[]
+  availability  VendorAvailability[]
+  ratings       JobRating[]
+  trustSnaps    TrustScoreSnapshot[]
+  claimedJobs   Job[]                @relation("JobClaimedBy")
+  awardedJobs   Job[]                @relation("JobAwardedTo")
+  chatThreads   ChatThread[]
+  invitations   JobInvitation[]
+  requisitions  Requisition[]
+  contracts     Contract[]
+  documents     JobDocument[]
+  notifications NotificationLog[]
+  activityLogs  ActivityLog[]        @relation("ActivityVendorActor")
+
+  @@index([accountStatus])
+  @@index([emergencyEligible, accountStatus, complianceStatus])
+  @@map("vendors")
+}
+
+model VendorAvailability {
+  id        String           @id @default(cuid())
+  vendorId  String           @map("vendor_id")
+  type      AvailabilityType @default(BLACKOUT)
+  startDate DateTime         @map("start_date")
+  endDate   DateTime         @map("end_date")
+  reason    String?
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, startDate, endDate])
+  @@map("vendor_availability")
+}
+
+// ---------------------------------------------------------------------------
+// Jobs
+// ---------------------------------------------------------------------------
+
+model Job {
+  id          String          @id @default(cuid())
+  jobNumber   String          @unique @map("job_number")
+  propertyId  String          @map("property_id")
+  unitNumber  String?         @map("unit_number")
+  title       String
+  description String
+  category    ServiceCategory
+  status      JobStatus       @default(DRAFT)
+
+  // Budget + bidding window
+  budgetMin        Decimal   @map("budget_min") @db.Decimal(12, 2)
+  budgetMax        Decimal   @map("budget_max") @db.Decimal(12, 2)
+  enforceBudgetCap Boolean   @default(false) @map("enforce_budget_cap")
+  bidDeadline      DateTime? @map("bid_deadline")
+  inviteOnly       Boolean   @default(false) @map("invite_only")
+
+  // Scheduling
+  scheduledStart DateTime? @map("scheduled_start")
+  dueDate        DateTime? @map("due_date")
+
+  // Emergency dispatch
+  priority                JobPriority        @default(STANDARD)
+  emergencyCategory       EmergencyCategory? @map("emergency_category")
+  responseDeadlineMinutes Int?               @map("response_deadline_minutes")
+  dispatchedAt            DateTime?          @map("dispatched_at")
+  claimedByVendorId       String?            @map("claimed_by_vendor_id")
+  claimedAt               DateTime?          @map("claimed_at")
+  onSiteAt                DateTime?          @map("on_site_at")
+  escalatedAt             DateTime?          @map("escalated_at")
+  escalationRadiusMiles   Int?               @map("escalation_radius_miles")
+
+  // Award
+  awardedVendorId String?   @map("awarded_vendor_id")
+  awardedBidId    String?   @unique @map("awarded_bid_id")
+  awardedAt       DateTime? @map("awarded_at")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  cancelledAt     DateTime? @map("cancelled_at")
+
+  createdByAdminId String   @map("created_by_admin_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  property      Property          @relation(fields: [propertyId], references: [id])
+  createdBy     AdminUser         @relation("JobCreatedBy", fields: [createdByAdminId], references: [id])
+  claimedBy     Vendor?           @relation("JobClaimedBy", fields: [claimedByVendorId], references: [id])
+  awardedVendor Vendor?           @relation("JobAwardedTo", fields: [awardedVendorId], references: [id])
+  awardedBid    Bid?              @relation("JobAwardedBid", fields: [awardedBidId], references: [id])
+  bids          Bid[]             @relation("JobBids")
+  requisition   Requisition?
+  contract      Contract?
+  rating        JobRating?
+  chatThreads   ChatThread[]
+  documents     JobDocument[]
+  invitations   JobInvitation[]
+  approvalFlags ApprovalFlag[]
+  activityLogs  ActivityLog[]
+  notifications NotificationLog[]
+
+  @@index([status, priority])
+  @@index([propertyId, status])
+  @@index([bidDeadline])
+  @@index([priority, status, claimedByVendorId])
+  @@map("jobs")
+}
+
+model JobInvitation {
+  id               String    @id @default(cuid())
+  jobId            String    @map("job_id")
+  vendorId         String    @map("vendor_id")
+  invitedByAdminId String    @map("invited_by_admin_id")
+  invitedAt        DateTime  @default(now()) @map("invited_at")
+  viewedAt         DateTime? @map("viewed_at")
+  respondedAt      DateTime? @map("responded_at")
+
+  job       Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  vendor    Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  invitedBy AdminUser @relation("InvitationInvitedBy", fields: [invitedByAdminId], references: [id])
+
+  @@unique([jobId, vendorId])
+  @@map("job_invitations")
+}
+
+// ---------------------------------------------------------------------------
+// Bids
+// Invariant enforced in application code (not a DB unique constraint, so that
+// withdrawn bids remain in history): at most one bid per (job, vendor) in a
+// non-WITHDRAWN state.
+// ---------------------------------------------------------------------------
+
+model Bid {
+  id                      String    @id @default(cuid())
+  jobId                   String    @map("job_id")
+  vendorId                String    @map("vendor_id")
+  amount                  Decimal   @db.Decimal(12, 2)
+  laborCost               Decimal?  @map("labor_cost") @db.Decimal(12, 2)
+  materialCost            Decimal?  @map("material_cost") @db.Decimal(12, 2)
+  status                  BidStatus @default(SUBMITTED)
+  notes                   String?
+  estimatedStartDate      DateTime? @map("estimated_start_date")
+  estimatedCompletionDate DateTime? @map("estimated_completion_date")
+  aboveBudgetMax          Boolean   @default(false) @map("above_budget_max")
+
+  submittedAt       DateTime  @default(now()) @map("submitted_at")
+  withdrawnAt       DateTime? @map("withdrawn_at")
+  approvedAt        DateTime? @map("approved_at")
+  approvedByAdminId String?   @map("approved_by_admin_id")
+  rejectedAt        DateTime? @map("rejected_at")
+  rejectionReason   String?   @map("rejection_reason")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  job           Job            @relation("JobBids", fields: [jobId], references: [id], onDelete: Cascade)
+  vendor        Vendor         @relation(fields: [vendorId], references: [id])
+  approvedBy    AdminUser?     @relation("BidApprovedBy", fields: [approvedByAdminId], references: [id])
+  awardedForJob Job?           @relation("JobAwardedBid")
+  requisition   Requisition?
+  contract      Contract?
+  approvalFlags ApprovalFlag[]
+
+  @@index([jobId, status])
+  @@index([vendorId, status])
+  @@map("bids")
+}
+
+// ---------------------------------------------------------------------------
+// Downstream systems — provider-agnostic (Coupa requisitions, contract system)
+// ---------------------------------------------------------------------------
+
+model Requisition {
+  id             String            @id @default(cuid())
+  jobId          String            @unique @map("job_id")
+  bidId          String?           @unique @map("bid_id")
+  vendorId       String            @map("vendor_id")
+  providerKey    String            @map("provider_key")
+  externalId     String?           @map("external_id")
+  status         RequisitionStatus @default(PENDING)
+  amount         Decimal           @db.Decimal(12, 2)
+  requestPayload Json?             @map("request_payload")
+  responseBody   Json?             @map("response_body")
+  errorMessage   String?           @map("error_message")
+  submittedAt    DateTime?         @map("submitted_at")
+  acknowledgedAt DateTime?         @map("acknowledged_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  job    Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  bid    Bid?   @relation(fields: [bidId], references: [id])
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+
+  @@map("requisitions")
+}
+
+model Contract {
+  id           String         @id @default(cuid())
+  jobId        String         @unique @map("job_id")
+  bidId        String?        @unique @map("bid_id")
+  vendorId     String         @map("vendor_id")
+  providerKey  String         @map("provider_key")
+  externalId   String?        @map("external_id")
+  status       ContractStatus @default(DRAFT)
+  amount       Decimal        @db.Decimal(12, 2)
+  documentUrl  String?        @map("document_url")
+  payload      Json?
+  sentAt       DateTime?      @map("sent_at")
+  signedAt     DateTime?      @map("signed_at")
+  expiresAt    DateTime?      @map("expires_at")
+  errorMessage String?        @map("error_message")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  job    Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  bid    Bid?   @relation(fields: [bidId], references: [id])
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+
+  @@map("contracts")
+}
+
+// ---------------------------------------------------------------------------
+// Ratings + trust score
+// ---------------------------------------------------------------------------
+
+model JobRating {
+  id                 String   @id @default(cuid())
+  jobId              String   @unique @map("job_id")
+  vendorId           String   @map("vendor_id")
+  adminUserId        String   @map("admin_user_id")
+  score              Int
+  noShow             Boolean  @default(false) @map("no_show")
+  missedDeadline     Boolean  @default(false) @map("missed_deadline")
+  qualityScore       Int?     @map("quality_score")
+  communicationScore Int?     @map("communication_score")
+  timelinessScore    Int?     @map("timeliness_score")
+  comment            String?
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  job       Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  vendor    Vendor    @relation(fields: [vendorId], references: [id])
+  adminUser AdminUser @relation(fields: [adminUserId], references: [id])
+
+  @@index([vendorId])
+  @@map("job_ratings")
+}
+
+model TrustScoreSnapshot {
+  id                       String   @id @default(cuid())
+  vendorId                 String   @map("vendor_id")
+  score                    Float
+  avgJobRating             Float?   @map("avg_job_rating")
+  complianceUptimePct      Float?   @map("compliance_uptime_pct")
+  googleRating             Float?   @map("google_rating")
+  experienceScore          Float?   @map("experience_score")
+  reliabilityPenalty       Float    @default(0) @map("reliability_penalty")
+  emergencyResponseScore   Float?   @map("emergency_response_score")
+  noShowCount              Int      @default(0) @map("no_show_count")
+  missedDeadlineCount      Int      @default(0) @map("missed_deadline_count")
+  completedJobCount        Int      @default(0) @map("completed_job_count")
+  avgEmergencyResponseMins Float?   @map("avg_emergency_response_mins")
+  weights                  Json
+  components               Json
+  reason                   String?
+  computedAt               DateTime @default(now()) @map("computed_at")
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, computedAt])
+  @@map("trust_score_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Approval governance
+// ---------------------------------------------------------------------------
+
+model ApprovalFlag {
+  id                    String           @id @default(cuid())
+  jobId                 String           @map("job_id")
+  bidId                 String           @map("bid_id")
+  propertyId            String           @map("property_id")
+  type                  ApprovalFlagType
+  thresholdPct          Float?           @map("threshold_pct")
+  averageBidAmount      Decimal?         @map("average_bid_amount") @db.Decimal(12, 2)
+  approvedAmount        Decimal          @map("approved_amount") @db.Decimal(12, 2)
+  deltaPct              Float?           @map("delta_pct")
+  budgetMax             Decimal?         @map("budget_max") @db.Decimal(12, 2)
+  bidCount              Int?             @map("bid_count")
+  note                  String?
+  acknowledgedByAdminId String?          @map("acknowledged_by_admin_id")
+  acknowledgedAt        DateTime?        @map("acknowledged_at")
+  createdAt             DateTime         @default(now()) @map("created_at")
+
+  job            Job        @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  bid            Bid        @relation(fields: [bidId], references: [id], onDelete: Cascade)
+  property       Property   @relation(fields: [propertyId], references: [id])
+  acknowledgedBy AdminUser? @relation("FlagAcknowledgedBy", fields: [acknowledgedByAdminId], references: [id])
+
+  @@index([createdAt])
+  @@index([propertyId, createdAt])
+  @@map("approval_flags")
+}
+
+model ApprovalSettings {
+  id                            String   @id @default("default")
+  aboveAverageThresholdPct      Float    @default(7.5) @map("above_average_threshold_pct")
+  contractThresholdAmount       Decimal  @default(5000) @map("contract_threshold_amount") @db.Decimal(12, 2)
+  emergencyResponseMinutes      Int      @default(15) @map("emergency_response_minutes")
+  emergencyRadiusExpansionMiles Int      @default(25) @map("emergency_radius_expansion_miles")
+  defaultServiceRadiusMiles     Int      @default(25) @map("default_service_radius_miles")
+  complianceExpiryWarningDays   Int      @default(30) @map("compliance_expiry_warning_days")
+  trustScoreWeights             Json     @map("trust_score_weights")
+  updatedByAdminId              String?  @map("updated_by_admin_id")
+  updatedAt                     DateTime @updatedAt @map("updated_at")
+
+  updatedBy AdminUser? @relation("SettingsUpdatedBy", fields: [updatedByAdminId], references: [id])
+
+  @@map("approval_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Chat — one thread per (job, vendor); admins see all threads on a job,
+// a vendor only ever sees its own.
+// ---------------------------------------------------------------------------
+
+model ChatThread {
+  id                String    @id @default(cuid())
+  jobId             String    @map("job_id")
+  vendorId          String    @map("vendor_id")
+  adminUnreadCount  Int       @default(0) @map("admin_unread_count")
+  vendorUnreadCount Int       @default(0) @map("vendor_unread_count")
+  lastMessageAt     DateTime? @map("last_message_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  job      Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  vendor   Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@unique([jobId, vendorId])
+  @@index([vendorId, lastMessageAt])
+  @@map("chat_threads")
+}
+
+model ChatMessage {
+  id                 String    @id @default(cuid())
+  threadId           String    @map("thread_id")
+  senderType         ActorType
+  senderAdminId      String?   @map("sender_admin_id")
+  senderVendorUserId String?   @map("sender_vendor_user_id")
+  body               String
+  attachmentUrl      String?   @map("attachment_url")
+  readByAdminAt      DateTime? @map("read_by_admin_at")
+  readByVendorAt     DateTime? @map("read_by_vendor_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  thread           ChatThread  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderAdmin      AdminUser?  @relation("ChatMessageAdminSender", fields: [senderAdminId], references: [id])
+  senderVendorUser VendorUser? @relation("ChatMessageVendorSender", fields: [senderVendorUserId], references: [id])
+
+  @@index([threadId, createdAt])
+  @@map("chat_messages")
+}
+
+// ---------------------------------------------------------------------------
+// Documents, activity, notifications
+// ---------------------------------------------------------------------------
+
+model JobDocument {
+  id             String       @id @default(cuid())
+  jobId          String       @map("job_id")
+  vendorId       String?      @map("vendor_id")
+  type           DocumentType @default(OTHER)
+  fileName       String       @map("file_name")
+  url            String
+  mimeType       String?      @map("mime_type")
+  sizeBytes      Int?         @map("size_bytes")
+  uploadedByType ActorType    @map("uploaded_by_type")
+  uploadedById   String?      @map("uploaded_by_id")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  job    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  vendor Vendor? @relation(fields: [vendorId], references: [id])
+
+  @@index([jobId, type])
+  @@map("job_documents")
+}
+
+model ActivityLog {
+  id            String             @id @default(cuid())
+  entityType    ActivityEntityType @map("entity_type")
+  entityId      String             @map("entity_id")
+  jobId         String?            @map("job_id")
+  action        String
+  fromStatus    String?            @map("from_status")
+  toStatus      String?            @map("to_status")
+  actorType     ActorType          @map("actor_type")
+  actorAdminId  String?            @map("actor_admin_id")
+  actorVendorId String?            @map("actor_vendor_id")
+  summary       String?
+  metadata      Json?
+  createdAt     DateTime           @default(now()) @map("created_at")
+
+  job         Job?       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  actorAdmin  AdminUser? @relation("ActivityAdminActor", fields: [actorAdminId], references: [id])
+  actorVendor Vendor?    @relation("ActivityVendorActor", fields: [actorVendorId], references: [id])
+
+  @@index([jobId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@map("activity_logs")
+}
+
+model NotificationLog {
+  id                String              @id @default(cuid())
+  channel           NotificationChannel
+  status            NotificationStatus  @default(QUEUED)
+  recipientType     ActorType           @map("recipient_type")
+  vendorId          String?             @map("vendor_id")
+  adminUserId       String?             @map("admin_user_id")
+  jobId             String?             @map("job_id")
+  template          String
+  destination       String
+  body              String?
+  providerKey       String?             @map("provider_key")
+  providerMessageId String?             @map("provider_message_id")
+  errorMessage      String?             @map("error_message")
+  sentAt            DateTime?           @map("sent_at")
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  vendor    Vendor?    @relation(fields: [vendorId], references: [id])
+  adminUser AdminUser? @relation("NotificationAdminRecipient", fields: [adminUserId], references: [id])
+  job       Job?       @relation(fields: [jobId], references: [id])
+
+  @@index([jobId, channel])
+  @@index([vendorId, createdAt])
+  @@map("notification_logs")
+}
+
+model PushSubscription {
+  id           String    @id @default(cuid())
+  endpoint     String    @unique
+  p256dh       String
+  auth         String
+  vendorUserId String?   @map("vendor_user_id")
+  adminUserId  String?   @map("admin_user_id")
+  userAgent    String?   @map("user_agent")
+  lastUsedAt   DateTime? @map("last_used_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  vendorUser VendorUser? @relation(fields: [vendorUserId], references: [id], onDelete: Cascade)
+  adminUser  AdminUser?  @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@map("push_subscriptions")
+}
