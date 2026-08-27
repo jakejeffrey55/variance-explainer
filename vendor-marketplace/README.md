@@ -13,7 +13,7 @@ NextAuth · PWA (manifest + service worker).
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 | Scaffold, Prisma schema, separate admin/vendor auth, seed data | **done** |
-| 2 | Property/job CRUD, CSV import (Power BI + OneSite stubbed), admin dashboard | pending |
+| 2 | Property/job CRUD, CSV import (Power BI + OneSite stubbed), admin dashboard | **done** |
 | 3 | Vendor profile/preferences, onboarding approval gate, filtered job board | pending |
 | 4 | Bidding + approval, data isolation, budget cap, withdrawal, ApprovalFlag | pending |
 | 5 | Emergency dispatch: SMS/push/email, claim flow, auto-escalation | pending |
@@ -35,8 +35,15 @@ npm run db:seed               # destructive: wipes and reseeds dev data
 npm run dev
 ```
 
-Then `bash scripts/auth-smoke.sh` against a running dev server to verify the authorization
-boundaries (16 checks: cross-scope denial, separate credential spaces, account gates).
+Against a running dev server:
+
+```bash
+bash scripts/auth-smoke.sh      # 16 checks — cross-scope denial, credential separation, account gates
+bash scripts/phase2-smoke.sh    # 45 checks — property CRUD, CSV import, job rules, transitions, pages
+```
+
+Do not run `npm run build` while `npm run dev` is running — they share `.next` and the dev
+server will start serving a half-written build.
 
 ## Authentication model
 
@@ -67,6 +74,26 @@ Enforcement lives in `src/lib/auth/session.ts` and is applied by the route wrapp
 `where` clause there so the session's vendor id cannot be left out; a vendor id is never
 accepted from a request parameter. Middleware (`src/middleware.ts`) only redirects
 unauthenticated navigation — it never grants access.
+
+## Admin surface
+
+| Route | What it does |
+| --- | --- |
+| `/admin` | Dashboard: attention counters, overdue-emergency banner, recent jobs, activity, adapter status |
+| `/admin/jobs` | Filterable job board — emergencies pinned in their own section, single-tap status filters |
+| `/admin/jobs/new`, `/admin/jobs/[id]`, `/admin/jobs/[id]/edit` | Create (standard or emergency), detail with bid table + timeline, edit |
+| `/admin/properties`, `/admin/properties/[id]` | Property list/search, manual add/edit, detail with jobs and rent roll |
+| `/admin/import` | CSV import with dry-run preview, per-row errors, template download, import history |
+
+Job rules enforced in `src/lib/services/job.ts` (not in the form):
+
+- Emergency jobs open and dispatch immediately; standard jobs start as drafts.
+- An emergency cannot carry a bid deadline, a budget cap, an invite list, or the
+  bidding transitions — it is claimed, not bid on.
+- A job cannot be published with a bid deadline in the past.
+- The budget cap cannot be switched on, or an enforced maximum lowered, once bids exist.
+- A GC job whose contract has not reached pending signature cannot move to in progress.
+- Completed and cancelled jobs are immutable.
 
 ## Integration adapters
 
